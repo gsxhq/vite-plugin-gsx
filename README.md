@@ -107,7 +107,7 @@ server: {
 
 ### 2. `@vite/client` script in the layout
 
-The browser needs the `@vite/client` script to receive the full-reload signal. Inject it in your root layout, gated on the dev environment variable so it never ships to production:
+The browser needs the `@vite/client` script to receive the full-reload signal. Inject it in your root layout, gated on a boolean your app controls so the script is never emitted in production:
 
 ```gsx
 component Layout(title string) {
@@ -118,7 +118,13 @@ component Layout(title string) {
 }
 ```
 
-The `dev` identifier resolves to `true` when gsx is generating with the dev flag (set by the plugin automatically). In production, the `if dev` branch is omitted and the script tag is never emitted.
+`dev` is a boolean **you** supply — the plugin does not set or pass any dev flag. Gate it on the same signal as `NotifyViteReload` so the two stay consistent. The natural choice is whether `VITE_DEV_URL` is set (the `NotifyViteReload` snippet already no-ops when it is empty):
+
+```go
+var dev = os.Getenv("VITE_DEV_URL") != ""
+```
+
+Pass `dev` into the layout from your handler. When `VITE_DEV_URL` is unset (production), `dev` is `false`, the `if dev` branch is omitted, and the script tag is never emitted.
 
 ### 3. `NotifyViteReload` — Go boot hook
 
