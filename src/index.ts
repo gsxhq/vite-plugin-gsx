@@ -81,3 +81,6 @@ function readSource(file: string): string | null {
 }
 
 export default gsx;
+
+export { devFallback } from "./dev-fallback.js";
+export type { DevFallbackOptions, DevFallback } from "./dev-fallback.js";

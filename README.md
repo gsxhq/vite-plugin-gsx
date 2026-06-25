@@ -190,6 +190,61 @@ All options are optional. Omit them entirely to use the defaults.
 
 ---
 
+## Dev fallback (backend-restart resilience)
+
+`devFallback` wraps a second Vite plugin and a proxy `configure` hook that together replace raw proxy errors (502/ECONNREFUSED) with a self-recovering interstitial page while the Go backend is down or restarting.
+
+**What it does:**
+
+- Intercepts proxy errors and serves a dark-mode HTML interstitial instead of an empty browser error page.
+- The interstitial carries `/@vite/client` so the normal `/__reload` push reloads it when the Go server comes back up — no manual refresh needed.
+- It polls `/__dev/status` every second; when the backend answers the health check the page reloads automatically.
+- `/__dev/status` tails the dev log (`tmp/dev.log` by default) so you can watch build/restart output directly in the browser.
+
+**API:**
+
+```ts
+devFallback(opts: DevFallbackOptions): { plugin: Plugin; configureProxy: (proxy: any) => void }
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `target` | `string` | _(required)_ | Go upstream origin, e.g. `"http://localhost:7777"`. |
+| `logFile` | `string` | `"tmp/dev.log"` | Dev log to tail in the interstitial. The Taskfile should tee Go output here. |
+| `healthPath` | `string` | `"/healthz"` | Backend liveness endpoint. Your Go server must expose this. |
+| `statusPath` | `string` | `"/__dev/status"` | Status SSE/JSON endpoint registered by the plugin. |
+
+**Wiring:**
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import { gsx, devFallback } from "@gsxhq/vite-plugin-gsx";
+
+const fallback = devFallback({ target: "http://localhost:7777", logFile: "tmp/dev.log" });
+
+export default defineConfig({
+  plugins: [gsx(), fallback.plugin],
+  server: {
+    proxy: {
+      "^(?!/@vite|/@id|/@fs|/web/|/node_modules|/__reload|/__dev).*": {
+        target: "http://localhost:7777",
+        changeOrigin: true,
+        configure: fallback.configureProxy,
+      },
+    },
+  },
+});
+```
+
+**Requirements:**
+
+- Your Go server must expose a `/healthz` endpoint (returns any non-5xx status when ready).
+- `tmp/dev.log` must exist and be written to by your dev runner. The Taskfile tees Go output there, e.g. `go run ./cmd/app 2>&1 | tee tmp/dev.log`.
+- Dev-only — `devFallback` has no effect on production (`vite build`).
+
+---
+
 ## Notes
 
 - **Dev-only.** The plugin sets `apply: "serve"` and is excluded from production builds. It has no effect on `vite build`.
