@@ -41,6 +41,11 @@ describe("backendUp", () => {
     expect(await backendUp(up.url)).toBe(false);
     up.close();
   });
+  it("true when healthz is 404 (reachable, < 500)", async () => {
+    const up = await fakeUpstream(404);
+    expect(await backendUp(up.url)).toBe(true);
+    up.close();
+  });
   it("false when the upstream is unreachable", async () => {
     expect(await backendUp("http://localhost:1")).toBe(false);
   });

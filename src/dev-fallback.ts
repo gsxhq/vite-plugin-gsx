@@ -103,6 +103,7 @@ export function serveBackendDown(res: any, html: string): void {
     }
     return;
   }
+  if (res.writableEnded) return;
   if (!res.headersSent) {
     res.writeHead(503, {
       "content-type": "text/html; charset=utf-8",
