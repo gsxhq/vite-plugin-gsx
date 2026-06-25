@@ -1,14 +1,23 @@
 {
   "name": "@gsxhq/vite-plugin-gsx",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vite dev plugin for gsx: watch .gsx, regenerate, error overlay, browser reload.",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=18" },
-  "repository": { "type": "git", "url": "git+https://github.com/gsxhq/vite-plugin-gsx.git" },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gsxhq/vite-plugin-gsx.git"
+  },
   "homepage": "https://github.com/gsxhq/vite-plugin-gsx#readme",
-  "publishConfig": { "access": "public" },
-  "files": ["dist"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -29,16 +29,27 @@ export function gsx(options: GsxOptions = {}): Plugin {
         res.end();
       });
 
-      // 2. Run gsx generate; show or clear the overlay. Never broadcasts a
-      //    reload — that is the Go-POST's job, so we only reload once the new
-      //    binary is up.
+      // 2. Run gsx generate; show or clear the overlay. On a normal success it
+      //    does NOT reload — that is the Go-POST's job, so we only reload once
+      //    the new binary is up. The one exception is RECOVERY: when a success
+      //    follows a shown error overlay, we broadcast a reload ourselves —
+      //    otherwise the overlay is stuck. (The Go server never restarted during
+      //    a pre-build error, and gsx may skip rewriting an unchanged .x.go, so
+      //    wgo won't rebuild and the Go-POST /__reload never fires.)
+      let errorShown = false;
       async function generate() {
         const result = await runGenerate({
           command: opts.command,
           paths: opts.paths,
           cwd: opts.cwd,
         });
-        if (result.ok) return;
+        if (result.ok) {
+          if (errorShown) {
+            errorShown = false;
+            server.ws.send({ type: "full-reload", path: "*" });
+          }
+          return;
+        }
         const err = toViteError(result.diagnostics, readSource);
         if (err) {
           for (const d of result.diagnostics) {
@@ -46,6 +57,7 @@ export function gsx(options: GsxOptions = {}): Plugin {
               timestamp: true,
             });
           }
+          errorShown = true;
           server.ws.send({ type: "error", err });
         }
       }

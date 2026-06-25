@@ -5,12 +5,16 @@
 //   --mode=fail            : print a gsx --json diagnostics array, exit 1
 //   --mode=badjson         : print non-JSON to stdout, exit 1
 //   --mode=crash           : print "gsx: boom" to stderr, exit 2 (no stdout)
+// A `.gsxfail` file in cwd forces fail mode regardless of the flag — so a test
+// can flip a single plugin instance from failing to succeeding (and back).
 // Always appends one line to ./gsx-ran.log in cwd so tests can count invocations.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const argv = process.argv.slice(2);
-const mode = (argv.find((a) => a.startsWith("--mode=")) ?? "--mode=ok").slice(7);
+const mode = existsSync(join(process.cwd(), ".gsxfail"))
+  ? "fail"
+  : (argv.find((a) => a.startsWith("--mode=")) ?? "--mode=ok").slice(7);
 
 appendFileSync(join(process.cwd(), "gsx-ran.log"), mode + "\n");
 

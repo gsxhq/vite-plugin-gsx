@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
 import { createServer as createHttp, type Server } from "node:http";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gsx } from "../src/index.js";
@@ -81,6 +81,37 @@ describe("vite-plugin-gsx", () => {
     );
     expect(send).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "error" }),
+    );
+  });
+
+  it("a successful generate after a failure broadcasts a reload (clears the overlay)", async () => {
+    await start(["node", fakeGsx]); // fail/ok decided by the .gsxfail sentinel
+    const send = vi.spyOn(server.ws, "send");
+    const gsxFile = join(root, "foo.gsx");
+    writeFileSync(gsxFile, "package x\n");
+
+    // 1. Fail: sentinel present → generate fails → error overlay.
+    writeFileSync(join(root, ".gsxfail"), "");
+    server.watcher.emit("change", gsxFile);
+    await vi.waitFor(
+      () =>
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "error" }),
+        ),
+      { timeout: 2000 },
+    );
+
+    // 2. Recover: remove the sentinel → generate succeeds → the plugin reloads
+    //    to clear the overlay (the Go server never went down, so this is safe).
+    send.mockClear();
+    rmSync(join(root, ".gsxfail"));
+    server.watcher.emit("change", gsxFile);
+    await vi.waitFor(
+      () =>
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "full-reload" }),
+        ),
+      { timeout: 2000 },
     );
   });
 
