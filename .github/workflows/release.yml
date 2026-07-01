@@ -20,7 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          package-manager-cache: false
       - run: npm ci
       - run: npm run typecheck
       - run: npm run typecheck:example
@@ -55,6 +54,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
-            --target "v${{ steps.version.outputs.version }}" \
             --title "v${{ steps.version.outputs.version }}" \
             --notes "Release @gsxhq/vite-plugin-gsx v${{ steps.version.outputs.version }}."
