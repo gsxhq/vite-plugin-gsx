@@ -1,8 +1,35 @@
 # @gsxhq/vite-plugin-gsx
 
-Vite dev plugin for [gsx](https://github.com/gsxhq/gsx) — watches `.gsx` files, runs `gsx generate`, shows compile errors in the Vite overlay, and triggers a full browser reload after the Go server reboots.
+Vite dev plugin for [gsx](https://github.com/gsxhq/gsx). It makes Vite the dev
+front door for a server-rendered gsx + Go app: it shows gsx compile errors in the
+Vite error overlay and issues a full browser reload when the Go server is back up
+after a rebuild.
 
-Because gsx renders HTML **server-side**, there is no JavaScript module graph to hot-replace. The plugin does not use Vite HMR; instead it re-generates the `.x.go` files, waits for the Go binary to restart, and then issues a **full-reload** driven by a POST from the Go server — not by the file-change event itself. This keeps the browser tab pointing at a live server, never at stale generated code.
+Because gsx renders HTML **server-side**, there is no JavaScript module graph to
+hot-replace. The plugin does not use Vite HMR; every change ends in a **full
+page reload**, and that reload is timed to fire only once the Go server is up and
+serving fresh code — so the browser tab never lands on a server that is mid-restart.
+
+## Two ways to run
+
+The plugin needs two things to happen on a `.gsx`/`.go` change: the `.x.go` files
+get regenerated, and the browser gets told when to reload. **Who drives that** is
+the choice:
+
+- **With `gsx dev` (default, recommended).** [`gsx dev`](https://github.com/gsxhq/gsx)
+  owns the whole loop — it regenerates (warm, in-process), rebuilds + restarts the
+  Go server, and POSTs events to this plugin: codegen/build errors drive the
+  overlay, and a reload ping fires once the server is healthy. The plugin just
+  **receives** these. This is the default; `gsx()` spawns nothing.
+- **Standalone (`gsx({ daemon: true })`).** No `gsx dev`. The plugin itself spawns
+  a long-lived `gsx generate --watch` daemon to regenerate `.x.go` and drive the
+  overlay, and **you** bring your own `.go` watcher (e.g. `wgo`) plus a Go-side
+  `NotifyReload` call to trigger the browser reload. This is the v0.3.x behavior,
+  kept as opt-in.
+
+> **Requires:** the default (receive-events) mode needs a `gsx` that has the
+> `gsx dev` command. If your `gsx` predates `gsx dev`, use `gsx({ daemon: true })`
+> (or scaffold with `gsx init`, which wires the whole loop for you).
 
 ---
 
@@ -12,194 +39,219 @@ Because gsx renders HTML **server-side**, there is no JavaScript module graph to
 npm i -D @gsxhq/vite-plugin-gsx
 ```
 
+The fastest way to get a correctly-wired project is `gsx init`, which scaffolds
+the `vite.config.ts`, `.env`, and Go server for you and runs everything via
+`gsx dev`. Fresh scaffolds leave the Vite port unset; `gsx dev` picks an
+available front-door port and passes `VITE_PORT` / `VITE_DEV_URL` to Vite and the
+Go server. The rest of this document is for understanding or hand-wiring that
+setup.
+
 ### Prerequisite: `go tool gsx`
 
-The default command is `go tool gsx generate`. Register the tool in your Go module once:
+Register gsx as a Go tool in your module once:
 
 ```bash
 go get -tool github.com/gsxhq/gsx/cmd/gsx
 ```
 
-After this, `go tool gsx generate` works without a separate install step and is pinned to your `go.mod` version. If you maintain a custom `cmd/gsx` in your own repo, override the command option instead (see [Options](#options)).
+After this, `go tool gsx dev` / `go tool gsx generate` work without a separate
+install and stay pinned to your `go.mod` version.
 
 ---
 
-## Quick start
+## Quick start (with `gsx dev`)
 
 ```ts
 // vite.config.ts
-import { defineConfig } from "vite";
-import { gsx } from "@gsxhq/vite-plugin-gsx";
+import { defineConfig, loadEnv, createLogger } from "vite";
+import { gsx, devFallback } from "@gsxhq/vite-plugin-gsx";
 
-// Example dev config: Vite is the front door and proxies non-Vite routes to the
-// Go server, so the injected @vite/client socket survives Go rebuilds.
-export default defineConfig({
-  plugins: [
-    gsx({
-      // Default is ["go","tool","gsx","generate"]; override for a custom cmd/gsx:
-      // command: ["go", "run", "./cmd/gsx", "generate"],
-    }),
-  ],
-  server: {
-    proxy: {
-      "^(?!/@vite|/@id|/node_modules).*": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        ws: true,
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  const goPort = env.GO_PORT || "7777";
+  const vitePort = parseInt(env.VITE_PORT || "5173", 10);
+
+  // Serve a self-recovering interstitial while the Go server is down/restarting
+  // instead of showing a raw proxy error.
+  const fallback = devFallback({ target: `http://localhost:${goPort}` });
+
+  // The fallback page is the useful signal while the Go server is restarting,
+  // so hide Vite's duplicate "http proxy error ... ECONNREFUSED" log line.
+  const logger = createLogger();
+  const baseError = logger.error;
+  logger.error = (msg, opts) => {
+    if (typeof msg === "string" && msg.includes("http proxy error")) return;
+    baseError(msg, opts);
+  };
+
+  return {
+    clearScreen: false,
+    // Dev serves Vite assets under /__vite/ so app routes can own everything
+    // else. Production keeps the default base because the Go server serves the
+    // built manifest assets from /static.
+    base: command === "serve" ? "/__vite/" : "/",
+    publicDir: false,
+    customLogger: logger,
+    plugins: [
+      gsx(),
+      fallback.plugin,
+      {
+        name: "gsx-dev-url",
+        configureServer(server) {
+          server.printUrls = () => {
+            server.config.logger.info(
+              `\n  \x1b[32m➜\x1b[0m  Open \x1b[36mhttp://localhost:${vitePort}/\x1b[0m to view your app\n`,
+            );
+          };
+        },
+      },
+    ],
+    server: {
+      port: vitePort,
+      // `gsx dev` chooses an available VITE_PORT when one is not configured.
+      // If you set VITE_PORT yourself, it is treated as explicit and gsx dev
+      // exits if that port is already in use.
+      strictPort: true,
+      proxy: {
+        // Everything except Vite's dev-asset namespace and the fallback status
+        // endpoint goes to the Go server. Do not enable `ws: true`; the Go
+        // server has no WebSocket, and proxying WS would capture Vite HMR.
+        "^(?!/__vite/|/__dev).*": {
+          target: `http://localhost:${goPort}`,
+          changeOrigin: true,
+          configure: fallback.configureProxy,
+        },
       },
     },
-  },
+  };
 });
 ```
 
-This config is also present at [`examples/vite.config.ts`](examples/vite.config.ts) and is type-checked on every CI run (`npm run typecheck:example`).
+Then run the dev loop with **one** command:
+
+```bash
+go tool gsx dev      # or `npm run dev` if your package.json maps it
+```
+
+`gsx dev` starts Vite, builds + runs the Go server, watches `.gsx`/`.go`/`.env`,
+and drives this plugin. You do **not** need `wgo`, a Taskfile, or a
+`NotifyReload` call in your `main.go` — `gsx dev` owns reload timing.
+
+When `VITE_PORT` is absent, `gsx dev` scans from 5173 upward and exports a
+matching `VITE_DEV_URL`. When `VITE_PORT` is present, it is authoritative: if the
+port is already in use, `gsx dev` exits before starting the Go server or watcher.
 
 ---
 
-## How the loop works
+## How the loop works (default, with `gsx dev`)
 
 ```
-save .gsx file
-    │
-    ▼
-vite-plugin-gsx: watcher fires
-    │  debounce 50 ms
-    ▼
-go tool gsx generate   ← regenerates .x.go files
-    │  ok → nothing broadcast (wait for Go server)
-    │  err → error overlay shown in browser
-    ▼
-wgo / air: detects .go change, rebuilds and restarts Go binary
-    │
-    ▼
-Go binary boots → calls NotifyViteReload(viteDevURL)
-    │  POST /__reload
-    ▼
-vite-plugin-gsx: receives POST → server.ws.send({ type: "full-reload" })
-    │
-    ▼
-browser tab reloads, fetches fresh HTML from the new Go server
+edit .gsx / .go / .env
+        │
+        ▼
+gsx dev: warm-regenerate .x.go → rebuild + restart the Go server (build-then-swap:
+        a broken build keeps the last-good server up)
+        │
+        ├─ POST /__gsx/event  → this plugin: ok:false → Vite error overlay
+        │                                     ok:true  → overlay cleared
+        ▼
+gsx dev: waits until the Go server answers /healthz, then
+        │
+        └─ POST /__reload     → this plugin: server.ws.send({ type: "full-reload" })
+        ▼
+browser reloads, fetching fresh HTML from the rebuilt Go server
 ```
 
-**Key invariant:** the browser reload is triggered by the Go POST, not by the `.gsx` file change. The plugin does not broadcast a reload immediately after `gsx generate` succeeds — it waits for the Go server to be up and ready before reloading the browser. This prevents the browser from loading a page from a server that is still mid-restart.
+**Key invariant:** the reload is timed by `gsx dev` (after the server is healthy),
+not by the file-change event — so the browser never loads a page from a server
+that is still mid-restart. The error overlay is event-driven and carries the
+error text in the POST body, so it works even when no dev log file is written.
 
 ---
 
-## Project-side glue (three pieces)
+## Standalone mode (`gsx({ daemon: true })`)
 
-The plugin handles the Vite side. Your Go project needs three corresponding pieces.
-
-### 1. Proxy
-
-Add the proxy block to your `vite.config.ts` (shown in the quick start above). This makes Vite the front door: asset and HMR WebSocket routes stay with Vite; everything else — your actual HTML pages — is proxied to the Go server on port 8080. The `@vite/client` WebSocket connection is maintained across Go rebuilds because it connects to Vite, not to Go.
+Use this when you are **not** running `gsx dev` — Vite is your only long-lived dev
+process. The plugin spawns one `gsx generate --watch --format=ndjson` daemon and
+reads its NDJSON event stream to drive the overlay. You supply the two pieces
+`gsx dev` would otherwise handle: a `.go` watcher and a Go-side reload ping.
 
 ```ts
-server: {
-  proxy: {
-    "^(?!/@vite|/@id|/node_modules).*": {
-      target: "http://localhost:8080",
-      changeOrigin: true,
-      ws: true,
-    },
-  },
-},
+plugins: [gsx({ daemon: true }), fallback.plugin]
 ```
 
-### 2. `@vite/client` script in the layout
+### A `.go` watcher (rebuild + restart the Go binary)
 
-The browser needs the `@vite/client` script to receive the full-reload signal. Inject it in your root layout, gated on a boolean your app controls so the script is never emitted in production:
-
-```gsx
-component Layout(title string) {
-  <head>
-    <title>{title}</title>
-    if dev { <script type="module" src="/@vite/client"></script> }
-  </head>
-}
-```
-
-`dev` is a boolean **you** supply — the plugin does not set or pass any dev flag. Gate it on the same signal as `NotifyViteReload` so the two stay consistent. The natural choice is whether `VITE_DEV_URL` is set (the `NotifyViteReload` snippet already no-ops when it is empty):
-
-```go
-var dev = os.Getenv("VITE_DEV_URL") != ""
-```
-
-Pass `dev` into the layout from your handler. When `VITE_DEV_URL` is unset (production), `dev` is `false`, the `if dev` branch is omitted, and the script tag is never emitted.
-
-### 3. `NotifyViteReload` — Go boot hook
-
-After your Go server starts (or restarts after a wgo rebuild), call `NotifyViteReload` with the Vite dev server URL. This fires a POST to `/__reload`, which the plugin receives and forwards to the browser as a full-reload.
-
-```go
-// NotifyViteReload pokes the Vite dev server after this binary boots so any
-// browser tab holding an @vite/client socket reloads. Dev-only: no-ops when
-// VITE_DEV_URL is unset.
-func NotifyViteReload(viteDevURL string) {
-    if viteDevURL == "" {
-        return
-    }
-    go func() {
-        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-        defer cancel()
-        for range 10 {
-            req, err := http.NewRequestWithContext(ctx, http.MethodPost, viteDevURL+"/__reload", nil)
-            if err != nil {
-                return
-            }
-            if resp, err := http.DefaultClient.Do(req); err == nil {
-                resp.Body.Close()
-                return
-            }
-            select {
-            case <-ctx.Done():
-                return
-            case <-time.After(150 * time.Millisecond):
-            }
-        }
-    }()
-}
-```
-
-Pass `os.Getenv("VITE_DEV_URL")` (e.g. `http://localhost:5173`) when starting the server in dev mode. In production, leave `VITE_DEV_URL` unset and the function is a no-op.
-
-### `wgo` for Go rebuilds
-
-The plugin only regenerates `.x.go` files; it does not rebuild or restart the Go binary. Use `wgo` (or `air`) to watch `.go` files and rebuild:
+The plugin only regenerates `.x.go`; it does not build or run your server.
 
 ```bash
 go tool wgo -file=.go go build -o tmp/app ./cmd/app :: tmp/app
 ```
 
-`wgo` rebuilds and restarts `tmp/app` on any `.go` change, including the `.x.go` files that `gsx generate` just wrote. After restart, the new binary calls `NotifyViteReload` and the browser reloads.
+### A Go boot hook (trigger the browser reload)
+
+After your server boots (including after a `wgo` restart), POST `/__reload` so the
+browser reloads. The endpoint is the plugin's `reloadEndpoint` (default
+`/__reload`). gsx's `github.com/gsxhq/vite` helper provides `vite.NotifyReload`:
+
+```go
+vite.NotifyReload(os.Getenv("VITE_DEV_URL")) // dev-only; no-op when unset
+```
+
+### A Vite client script in your layout
+
+The browser needs Vite's client script to receive the full-reload signal. Inject
+it in your root layout, gated on a dev boolean you control (for example
+`VITE_DEV_URL != ""`). The path depends on your Vite dev `base`:
+
+```gsx
+// If base is the default "/":
+if dev { <script type="module" src="/@vite/client"></script> }
+
+// If base is "/__vite/" like the gsx init scaffold:
+if dev { <script type="module" src="/__vite/@vite/client"></script> }
+```
+
+(`gsx init` + `gsx dev` handle all three of these for you, which is why the
+default mode needs none of this section.)
 
 ---
 
 ## Options
 
-All options are optional. Omit them entirely to use the defaults.
+All options are optional.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `command` | `string[]` | `["go","tool","gsx","generate"]` | Command and leading args to invoke gsx. Override with `["go","run","./cmd/gsx","generate"]` for a local binary. |
-| `paths` | `string[]` | `["."]` | Path args passed to `generate`. Narrows which packages are regenerated. |
-| `watch` | `string \| string[]` | `"**/*.gsx"` | Glob(s) whose changes trigger regeneration. Relative to the Vite config root. |
-| `cwd` | `string` | Vite config root | Working directory for the generate command. |
-| `reloadEndpoint` | `string` | `"/__reload"` | HTTP endpoint the Go server POSTs to trigger a full browser reload. |
-| `debounce` | `number` | `50` | Debounce window in milliseconds for rapid saves before running generate. |
-| `generateOnStart` | `boolean` | `true` | Run an initial `gsx generate` when the Vite dev server starts, so `.x.go` files exist from the first boot. |
+| `daemon` | `boolean` | `false` | Spawn a `gsx generate --watch` daemon and drive the overlay from its NDJSON, instead of receiving events from `gsx dev` over HTTP. Set `true` for standalone Vite (no `gsx dev`). |
+| `command` | `string[]` | `["go","tool","gsx","generate"]` | Command + leading args for the daemon (only used when `daemon: true`). Override for a local `cmd/gsx`, e.g. `["go","run","./cmd/gsx","generate"]`. |
+| `paths` | `string[]` | `["."]` | Path args passed to the daemon's `generate` (only used when `daemon: true`). |
+| `cwd` | `string` | Vite config root | Working directory for the daemon command. |
+| `reloadEndpoint` | `string` | `"/__reload"` | HTTP endpoint that triggers a full browser reload. `gsx dev` (or your Go `NotifyReload`) POSTs here. |
+| ~~`watch`~~ | `string \| string[]` | — | **Deprecated / ignored.** The daemon owns watching. |
+| ~~`debounce`~~ | `number` | — | **Deprecated / ignored.** The daemon owns debouncing. |
+| ~~`generateOnStart`~~ | `boolean` | — | **Deprecated / ignored.** `gsx dev` / the daemon handle the initial generate. |
+
+The plugin always registers `POST /__gsx/event` (the receive-events endpoint) and
+`POST /__reload`, regardless of `daemon`.
 
 ---
 
 ## Dev fallback (backend-restart resilience)
 
-`devFallback` wraps a second Vite plugin and a proxy `configure` hook that together replace raw proxy errors (502/ECONNREFUSED) with a self-recovering interstitial page while the Go backend is down or restarting.
+`devFallback` wraps a second Vite plugin and a proxy `configure` hook that
+together replace raw proxy errors (502/ECONNREFUSED) with a self-recovering
+interstitial page while the Go backend is down or restarting.
 
 **What it does:**
 
-- Intercepts proxy errors and serves a dark-mode HTML interstitial instead of an empty browser error page.
-- The interstitial carries `/@vite/client` so the normal `/__reload` push reloads it when the Go server comes back up — no manual refresh needed.
-- It polls `/__dev/status` every second; when the backend answers the health check the page reloads automatically.
-- `/__dev/status` tails the dev log (`tmp/dev.log` by default) so you can watch build/restart output directly in the browser.
+- Intercepts proxy errors and serves a dark-mode HTML interstitial instead of an
+  empty browser error page.
+- The interstitial carries Vite's client script, so the normal `/__reload` push
+  reloads it when the Go server returns. No manual refresh is needed.
+- It polls `/__dev/status` every second and reloads when the backend is healthy.
+- `/__dev/status` tails a dev log if one is configured, so you can watch backend
+  output in the browser.
 
 **API:**
 
@@ -210,43 +262,24 @@ devFallback(opts: DevFallbackOptions): { plugin: Plugin; configureProxy: (proxy:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `target` | `string` | _(required)_ | Go upstream origin, e.g. `"http://localhost:7777"`. |
-| `logFile` | `string` | `"tmp/dev.log"` | Dev log to tail in the interstitial. The Taskfile should tee Go output here. |
-| `healthPath` | `string` | `"/healthz"` | Backend liveness endpoint. Your Go server must expose this. |
-| `statusPath` | `string` | `"/__dev/status"` | Status SSE/JSON endpoint registered by the plugin. |
+| `logFile` | `string` | `"tmp/dev.log"` | Dev log to tail in the interstitial. |
+| `healthPath` | `string` | `"/healthz"` | Backend liveness endpoint your Go server exposes. |
+| `statusPath` | `string` | `"/__dev/status"` | Status endpoint registered by the plugin. |
 
-**Wiring:**
-
-```ts
-// vite.config.ts
-import { defineConfig } from "vite";
-import { gsx, devFallback } from "@gsxhq/vite-plugin-gsx";
-
-const fallback = devFallback({ target: "http://localhost:7777", logFile: "tmp/dev.log" });
-
-export default defineConfig({
-  plugins: [gsx(), fallback.plugin],
-  server: {
-    proxy: {
-      "^(?!/@vite|/@id|/@fs|/web/|/node_modules|/__reload|/__dev).*": {
-        target: "http://localhost:7777",
-        changeOrigin: true,
-        configure: fallback.configureProxy,
-      },
-    },
-  },
-});
-```
-
-**Requirements:**
-
-- Your Go server must expose a `/healthz` endpoint (returns any non-5xx status when ready).
-- `tmp/dev.log` must exist and be written to by your dev runner. The Taskfile tees Go output there, e.g. `go run ./cmd/app 2>&1 | tee tmp/dev.log`.
-- Dev-only — `devFallback` has no effect on production (`vite build`).
+**About the dev log:** `gsx dev` keeps its backend log **off by default** (run
+`gsx dev --log` to enable it, or `--log-file <path>`). When no log file exists,
+the interstitial simply shows that the server is down without a tail — the error
+**overlay** is unaffected because it is driven by the event POST, not the file. If
+you want the in-page tail, run `gsx dev --log-file tmp/dev.log` and keep
+`devFallback`'s default `logFile`. In standalone mode, point `logFile` at whatever
+your runner writes (e.g. `… 2>&1 | tee tmp/dev.log`).
 
 ---
 
 ## Notes
 
-- **Dev-only.** The plugin sets `apply: "serve"` and is excluded from production builds. It has no effect on `vite build`.
-- **Production generation.** Run `gsx generate` in CI or via a `//go:generate` directive. The plugin is not involved.
-- **Full-reload only.** gsx renders HTML server-side, so there is no JavaScript module graph to partially update. Every change results in a full page reload, not a component-level HMR update.
+- **Dev-only.** The plugin sets `apply: "serve"` and has no effect on `vite build`.
+- **Production generation.** Run `gsx generate` in CI or via a `//go:generate`
+  directive. The plugin is not involved in production builds.
+- **Full-reload only.** gsx renders HTML server-side, so there is no JS module
+  graph to partially update — every change is a full page reload, never HMR.

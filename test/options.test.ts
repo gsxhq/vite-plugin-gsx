@@ -4,6 +4,7 @@ import { resolveOptions } from "../src/options.js";
 describe("resolveOptions", () => {
   it("applies all defaults when user passes nothing", () => {
     const r = resolveOptions({}, "/proj");
+    expect(r.daemon).toBe(false);
     expect(r.command).toEqual(["go", "tool", "gsx", "generate"]);
     expect(r.paths).toEqual(["."]);
     expect(r.watch).toEqual(["**/*.gsx"]);
@@ -26,6 +27,7 @@ describe("resolveOptions", () => {
         cwd: "/elsewhere",
         reloadEndpoint: "/__reload2",
         debounce: 120,
+        daemon: true,
         generateOnStart: false,
       },
       "/proj",
@@ -35,6 +37,7 @@ describe("resolveOptions", () => {
     expect(r.cwd).toBe("/elsewhere");
     expect(r.reloadEndpoint).toBe("/__reload2");
     expect(r.debounce).toBe(120);
+    expect(r.daemon).toBe(true);
     expect(r.generateOnStart).toBe(false);
   });
 });

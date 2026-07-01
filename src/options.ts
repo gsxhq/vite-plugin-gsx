@@ -1,4 +1,6 @@
 export interface GsxOptions {
+  /** Spawn gsx generate --watch instead of receiving events from gsx dev. Default: false. */
+  daemon?: boolean;
   /** Command + leading args to invoke gsx. Default: ["go","tool","gsx","generate"]. */
   command?: string[];
   /** Path args passed to generate. Default: ["."]. */
@@ -16,6 +18,7 @@ export interface GsxOptions {
 }
 
 export interface ResolvedOptions {
+  daemon: boolean;
   command: string[];
   paths: string[];
   watch: string[];
@@ -35,6 +38,7 @@ export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions 
         ? user.watch
         : [user.watch];
   return {
+    daemon: user.daemon ?? false,
     command: user.command ?? ["go", "tool", "gsx", "generate"],
     paths: user.paths ?? ["."],
     watch,
