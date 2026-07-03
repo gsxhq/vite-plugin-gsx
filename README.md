@@ -283,3 +283,19 @@ your runner writes (e.g. `… 2>&1 | tee tmp/dev.log`).
   directive. The plugin is not involved in production builds.
 - **Full-reload only.** gsx renders HTML server-side, so there is no JS module
   graph to partially update — every change is a full page reload, never HMR.
+
+## Releasing
+
+Releases are one-click via the `Release` GitHub Actions workflow
+(`workflow_dispatch`). It runs the test suite, bumps `package.json`, tags,
+pushes to `main`, cuts a GitHub release, and publishes to npm.
+
+Trigger from the CLI (`version` is `patch` / `minor` / `major`, or an explicit
+version like `0.4.6`):
+
+```bash
+gh workflow run release.yml -f version=patch
+gh run watch "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+Or from the GitHub UI: Actions → Release → Run workflow.
