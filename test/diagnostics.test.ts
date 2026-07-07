@@ -48,6 +48,25 @@ describe("toViteError", () => {
     expect(err.frame).toMatch(/\n\s+\^/);
   });
 
+  it("preserves leading tabs in the caret row so it aligns under any tab-size", () => {
+    // Source line indented with a TAB. gsx columns are byte-based (a tab counts
+    // as one column), but a tab renders as several columns in the overlay <pre>.
+    // The caret row must copy the tab (not substitute spaces) so it stays under
+    // the target column regardless of the viewer's tab-size.
+    const tabbed = "component X() {\n\t<div></span>\n"; // line 2 = "\t<div></span>"
+    const err = toViteError(
+      // col 2 = the "<" immediately after the leading tab (1-based, byte column)
+      [diag({ range: { start: { line: 2, col: 2 }, end: { line: 2, col: 2 } } })],
+      () => tabbed,
+    )!;
+    const [srcRow, caretRow] = err.frame.split("\n");
+    expect(srcRow).toBe("2 | \t<div></span>");
+    // Caret row mirrors the gutter WIDTH as spaces ("2 | " → 4 spaces), then the
+    // copied tab, then the caret — so in a <pre> the tab expands identically on
+    // both rows and the caret sits under the "<".
+    expect(caretRow).toBe("    \t^");
+  });
+
   it("yields an empty frame when the source cannot be read", () => {
     const err = toViteError([diag()], () => null)!;
     expect(err.frame).toBe("");

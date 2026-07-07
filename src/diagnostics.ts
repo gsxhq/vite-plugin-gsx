@@ -67,6 +67,24 @@ function buildFrame(
   if (srcLine === undefined) return "";
 
   const gutter = `${lineNo} | `;
-  const caretPad = " ".repeat(gutter.length + Math.max(0, diag.range.start.col - 1));
+  const caretPad = " ".repeat(gutter.length) + caretIndent(srcLine, diag.range.start.col);
   return `${gutter}${srcLine}\n${caretPad}^`;
+}
+
+/**
+ * Indentation for the caret row so the caret lands under a 1-based column of
+ * srcLine. Mirrors the source line's leading characters, PRESERVING TABS: a tab
+ * renders as several columns in the overlay <pre>, so copying the source tab
+ * (rather than substituting a single space) keeps the caret aligned regardless
+ * of the viewer's tab-size. This is the faithful port of gsx's own terminal
+ * renderer (internal/diag/render.go `caretPad`). Columns past the line's length
+ * (rare) fall back to spaces. gsx columns are byte-based; for the tab/ASCII
+ * indentation that .gsx files use this matches character indices exactly.
+ */
+function caretIndent(srcLine: string, col: number): string {
+  let pad = "";
+  for (let i = 0; i < col - 1; i++) {
+    pad += i < srcLine.length && srcLine[i] === "\t" ? "\t" : " ";
+  }
+  return pad;
 }
