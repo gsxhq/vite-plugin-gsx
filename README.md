@@ -276,6 +276,15 @@ your runner writes (e.g. `… 2>&1 | tee tmp/dev.log`).
 
 ---
 
+## Dev panel
+
+Press **Cmd-D** / **Ctrl-D** in the browser to open a status overlay with
+**Rebuild** and **Restart server** buttons, plus a live view of phase, Go
+server health, last cycle, and front-door state. The plugin serves the panel
+automatically; it needs `gsx dev` on the other end to act on button presses
+and push status (not the standalone `daemon: true` mode). Commands ride a
+small mailbox this plugin drains via long-poll — no extra port or listener.
+
 ## Notes
 
 - **Dev-only.** The plugin sets `apply: "serve"` and has no effect on `vite build`.
