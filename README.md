@@ -280,14 +280,19 @@ your runner writes (e.g. `… 2>&1 | tee tmp/dev.log`).
 
 Press **Cmd-D** / **Ctrl-D** in the browser to open a status overlay with
 **Rebuild** and **Restart server** buttons, plus a live view of phase, Go
-server health, last cycle, and front-door state. The plugin serves the panel
-automatically; it needs `gsx dev` on the other end to act on button presses
-and push status (not the standalone `daemon: true` mode). Commands ride a
-small mailbox this plugin drains via long-poll — no extra port or listener.
+server health, last cycle, and front-door state. Since gsx apps have no Vite
+`index.html`, add `import "virtual:gsx-devpanel";` to your client entry
+(`gsx init` scaffolds already have it) — the id resolves to the panel client in
+dev and to an empty module in production builds. It needs `gsx dev` on the
+other end to act on button presses and push status (not the standalone
+`daemon: true` mode). Commands ride a small mailbox this plugin drains via
+long-poll — no extra port or listener.
 
 ## Notes
 
-- **Dev-only.** The plugin sets `apply: "serve"` and has no effect on `vite build`.
+- **Dev-only.** The main plugin sets `apply: "serve"` and has no effect on
+  `vite build`; the small always-applied companion just keeps the
+  `virtual:gsx-devpanel` import resolving to an empty module in production.
 - **Production generation.** Run `gsx generate` in CI or via a `//go:generate`
   directive. The plugin is not involved in production builds.
 - **Full-reload only.** gsx renders HTML server-side, so there is no JS module

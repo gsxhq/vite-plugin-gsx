@@ -1,19 +1,57 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import type { Plugin, ViteDevServer } from "vite";
+import type { ConfigEnv, Plugin, ViteDevServer } from "vite";
 import { resolveOptions, type GsxOptions } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
 import { PanelChannel } from "./panel.js";
 
 export type { GsxOptions };
 
-export function gsx(options: GsxOptions = {}): Plugin {
+// gsx apps have no vite index.html (HTML streams from the Go server), so
+// transformIndexHtml never fires. The panel is instead delivered as an
+// explicit entry import: `import "virtual:gsx-devpanel"` in the app's client
+// entry. This id resolves to the built panel client in dev (so it's
+// transformed by vite → a real import.meta.hot) and to an empty module in
+// prod builds (the main plugin below is serve-only, so without this resolver
+// a `vite build` of that import would fail to resolve).
+const PANEL_VIRTUAL_ID = "virtual:gsx-devpanel";
+const PANEL_NOOP_ID = "\0gsx-devpanel-noop";
+
+function panelPlugin(): Plugin {
+  let command: ConfigEnv["command"] | undefined;
+  let warnedMissingClient = false;
+  return {
+    name: "vite-plugin-gsx:panel",
+    config(_config, env) {
+      command = env.command;
+    },
+    resolveId(id) {
+      if (id !== PANEL_VIRTUAL_ID) return null;
+      if (command === "build") return PANEL_NOOP_ID;
+      const clientPath = fileURLToPath(new URL("./client.js", import.meta.url));
+      if (existsSync(clientPath)) return clientPath;
+      if (!warnedMissingClient) {
+        warnedMissingClient = true;
+        this.warn(
+          `[gsx] panel client not built (${clientPath}); run \`npm run build\` in @gsxhq/vite-plugin-gsx. Serving an empty module instead.`,
+        );
+      }
+      return PANEL_NOOP_ID;
+    },
+    load(id) {
+      if (id === PANEL_NOOP_ID) return "export {}";
+      return null;
+    },
+  };
+}
+
+export function gsx(options: GsxOptions = {}): Plugin[] {
   // Shared ref so both configureServer and closeBundle can reach the child.
   let daemonChild: ReturnType<typeof spawn> | null = null;
 
-  return {
+  const main: Plugin = {
     name: "vite-plugin-gsx",
     apply: "serve",
     // Called by Vite's pluginContainer.close() → environment.close() → server.close(),
@@ -22,9 +60,6 @@ export function gsx(options: GsxOptions = {}): Plugin {
       daemonChild?.kill();
       daemonChild = null;
     },
-    transformIndexHtml() {
-      return [{ tag: "script", attrs: { type: "module", src: "/__gsx/panel.js" }, injectTo: "head" as const }];
-    },
     configureServer(server: ViteDevServer) {
       const opts = resolveOptions(options, server.config.root);
       const logger = server.config.logger;
@@ -32,19 +67,6 @@ export function gsx(options: GsxOptions = {}): Plugin {
       const panel = new PanelChannel(logger, (p) => server.ws.send(p as any));
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
-
-      // 2c. Panel client script. Built as dist/client.js next to this module.
-      server.middlewares.use("/__gsx/panel.js", (_req: any, res: any) => {
-        try {
-          const js = readFileSync(fileURLToPath(new URL("./client.js", import.meta.url)));
-          res.setHeader("content-type", "text/javascript");
-          res.end(js);
-        } catch {
-          // Running from src (tests): panel absent, not fatal.
-          res.statusCode = 404;
-          res.end("// gsx panel client not built");
-        }
-      });
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
@@ -179,6 +201,8 @@ export function gsx(options: GsxOptions = {}): Plugin {
       }
     },
   };
+
+  return [main, panelPlugin()];
 }
 
 function readSource(file: string): string | null {

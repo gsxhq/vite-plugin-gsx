@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isToggleKey, isEditable, renderStatus } from "../src/client-logic.js";
+import { isToggleKey, isEditable, renderStatus, buttonsDisabled } from "../src/client-logic.js";
 
 const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
   key: "d", metaKey: false, ctrlKey: false, altKey: false, ...over,
@@ -50,8 +50,24 @@ describe("renderStatus", () => {
   it("handles missing status", () => {
     expect(renderStatus(null)).toContain("waiting for status");
   });
+  it("prompts to check gsx dev while no status has arrived", () => {
+    expect(renderStatus(null)).toContain("waiting for status… (is gsx dev running?)");
+  });
   it("escapes injected strings", () => {
     const html = renderStatus({ ...status, phase: "<img src=x onerror=alert(1)>" });
     expect(html).not.toContain("<img");
+  });
+});
+
+describe("buttonsDisabled", () => {
+  it("disabled before the first status arrives, regardless of inflight", () => {
+    expect(buttonsDisabled(null, false)).toBe(true);
+    expect(buttonsDisabled(null, true)).toBe(true);
+  });
+  it("disabled while a command is inflight, once status has arrived", () => {
+    expect(buttonsDisabled({ phase: "idle" }, true)).toBe(true);
+  });
+  it("enabled once status has arrived and nothing is inflight", () => {
+    expect(buttonsDisabled({ phase: "idle" }, false)).toBe(false);
   });
 });

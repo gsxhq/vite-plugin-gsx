@@ -44,14 +44,14 @@ describe("/__gsx/event", () => {
   it("does NOT spawn a daemon by default and registers the event endpoint", () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     expect(s.handlers["/__gsx/event"]).toBeTypeOf("function");
   });
 
   it("sends an error overlay on ok:false, then clears on ok:true", async () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/event"]!;
 
     await call(h, {
@@ -80,7 +80,7 @@ describe("/__gsx/event", () => {
   it("logs diagnostics with one header format and indented details", async () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/event"]!;
 
     await call(h, {
@@ -116,7 +116,7 @@ describe("/__gsx/event", () => {
   it("does not repeat identical diagnostic logs until recovery", async () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/event"]!;
     const ev = {
       event: "generated",
@@ -155,7 +155,7 @@ describe("/__gsx/event", () => {
   it("suppresses follow-up build logs while a source diagnostic is current", async () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/event"]!;
 
     await call(h, {
@@ -197,7 +197,7 @@ describe("/__gsx/event", () => {
   it("replays the current error overlay to newly connected clients", async () => {
     const p = gsx();
     const s = fakeServer();
-    (p as any).configureServer(s);
+    (p[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/event"]!;
 
     await call(h, {

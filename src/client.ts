@@ -1,6 +1,6 @@
 // Dev panel: <gsx-devpanel> in shadow DOM, toggled by Cmd-D/Ctrl-D.
-// Served by the plugin at /__gsx/panel.js; talks over vite's HMR websocket.
-import { isToggleKey, isEditable, renderStatus } from "./client-logic.js";
+// Delivered via `import "virtual:gsx-devpanel"`; talks over vite's HMR websocket.
+import { isToggleKey, isEditable, renderStatus, buttonsDisabled } from "./client-logic.js";
 
 const hot = (import.meta as any).hot;
 if (hot) {
@@ -30,8 +30,8 @@ if (hot) {
       <div class="panel">
         <h1>gsx dev</h1>
         ${renderStatus(status)}
-        <button id="rebuild" ${inflight ? "disabled" : ""}>Rebuild</button>
-        <button id="restart" ${inflight ? "disabled" : ""}>Restart server</button>
+        <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
+        <button id="restart" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Restart server</button>
       </div>`;
     root.getElementById("rebuild")?.addEventListener("click", () => send("rebuild"));
     root.getElementById("restart")?.addEventListener("click", () => send("restart-server"));
