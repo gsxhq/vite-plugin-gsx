@@ -190,3 +190,30 @@ describe("devFallback target resolution (GSX_DEV_UPSTREAM)", () => {
     expect(json.up).toBe(true);
   });
 });
+
+describe("devFallback — no target fails fast at setup, never crashes at request time", () => {
+  const savedEnv = process.env.GSX_DEV_UPSTREAM;
+
+  beforeEach(() => {
+    delete process.env.GSX_DEV_UPSTREAM;
+  });
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.GSX_DEV_UPSTREAM;
+    else process.env.GSX_DEV_UPSTREAM = savedEnv;
+  });
+
+  it("throws a descriptive error naming both sources when neither is set", () => {
+    expect(() => devFallback()).toThrowError(/target/i);
+    expect(() => devFallback({})).toThrowError(/GSX_DEV_UPSTREAM/);
+  });
+
+  it("does not throw when opts.target is given even without GSX_DEV_UPSTREAM", () => {
+    expect(() => devFallback({ target: "http://localhost:1" })).not.toThrow();
+  });
+
+  it("a malformed-but-present target degrades the status endpoint to down, without crashing the process", async () => {
+    const fb = devFallback({ target: "not-a-valid-url" });
+    const json = await statusJSON(fb);
+    expect(json.up).toBe(false);
+  });
+});
