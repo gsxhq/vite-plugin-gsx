@@ -9,6 +9,7 @@ import {
   backendUp,
   readLogTail,
   serveBackendDown,
+  type DevFallback,
 } from "../src/dev-fallback.js";
 
 // fakeUpstream starts an http server answering /healthz with the given status.
@@ -132,5 +133,60 @@ describe("devFallback factory", () => {
     expect(status).toBe(503);
     expect(body).toContain("Backend");          // interstitial title/heading
     expect(body).toContain("/__dev/status");     // the poll target
+  });
+});
+
+// statusJSON boots a middlewareMode Vite server around fb.plugin and returns
+// the /__dev/status JSON body — shared by the GSX_DEV_UPSTREAM tests below.
+async function statusJSON(fb: DevFallback): Promise<{ up: boolean; log: string }> {
+  const server = await createServer({
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false },
+    plugins: [fb.plugin],
+  });
+  const http = createHttp(server.middlewares);
+  await new Promise<void>((r) => http.listen(0, r));
+  const port = (http.address() as { port: number }).port;
+  try {
+    const resp = await fetch(`http://localhost:${port}/__dev/status`);
+    return (await resp.json()) as { up: boolean; log: string };
+  } finally {
+    http.close();
+    await server.close();
+  }
+}
+
+describe("devFallback target resolution (GSX_DEV_UPSTREAM)", () => {
+  let upstream: { url: string; close: () => void };
+  const savedEnv = process.env.GSX_DEV_UPSTREAM;
+
+  beforeEach(async () => {
+    upstream = await fakeUpstream(200);
+  });
+  afterEach(() => {
+    upstream.close();
+    if (savedEnv === undefined) delete process.env.GSX_DEV_UPSTREAM;
+    else process.env.GSX_DEV_UPSTREAM = savedEnv;
+  });
+
+  it("falls back to GSX_DEV_UPSTREAM when opts.target is unset", async () => {
+    process.env.GSX_DEV_UPSTREAM = upstream.url;
+    const fb = devFallback({});
+    const json = await statusJSON(fb);
+    expect(json.up).toBe(true);
+  });
+
+  it("prefers an explicit opts.target over GSX_DEV_UPSTREAM", async () => {
+    process.env.GSX_DEV_UPSTREAM = "http://localhost:1"; // deliberately unreachable
+    const fb = devFallback({ target: upstream.url });
+    const json = await statusJSON(fb);
+    expect(json.up).toBe(true); // only true if the explicit target (not env) was probed
+  });
+
+  it("devFallback() with no opts at all also picks up GSX_DEV_UPSTREAM", async () => {
+    process.env.GSX_DEV_UPSTREAM = upstream.url;
+    const fb = devFallback();
+    const json = await statusJSON(fb);
+    expect(json.up).toBe(true);
   });
 });

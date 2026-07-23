@@ -27,9 +27,10 @@ export function renderStatus(status: any): string {
   const server = status.server ?? {};
   const fd = status.frontDoor ?? {};
   const lc = status.lastCycle;
+  const origin = server.upstream != null ? esc(server.upstream) : `:${esc(server.port ?? "?")}`;
   const rows = [
     ["phase", esc(status.phase ?? "?")],
-    ["server", `${server.healthy ? "healthy" : "down"} :${esc(server.port ?? "?")}`],
+    ["server", `${server.healthy ? "healthy" : "down"} ${origin}`],
     ["front door", `${esc(fd.state ?? "?")}${fd.restarts ? ` (${esc(fd.restarts)} restarts)` : ""}`],
   ];
   if (lc) rows.push(["last cycle", `${lc.ok ? "ok" : `${esc(lc.errors)} error(s)`} at ${esc(lc.at ?? "")}`]);

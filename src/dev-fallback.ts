@@ -3,8 +3,12 @@ import http from "node:http";
 import type { Plugin } from "vite";
 
 export interface DevFallbackOptions {
-  /** Go upstream origin, e.g. "http://localhost:7777". */
-  target: string;
+  /**
+   * Go upstream origin, e.g. "http://localhost:7777". Defaults to
+   * `process.env.GSX_DEV_UPSTREAM` (injected by `gsx dev`); required when
+   * running standalone (no `gsx dev`) and unset.
+   */
+  target?: string;
   /** Combined dev log to tail in the interstitial. Default "tmp/dev.log". */
   logFile?: string;
   /** Backend liveness endpoint. Default "/healthz". */
@@ -23,7 +27,13 @@ export interface DevFallback {
 // devFallback returns a Vite plugin + a proxy configure hook that together turn
 // a down/restarting Go backend into a self-recovering interstitial instead of a
 // raw proxy error. Dev-only.
-export function devFallback(opts: DevFallbackOptions): DevFallback {
+//
+// opts.target defaults to process.env.GSX_DEV_UPSTREAM — read here, at call
+// time, so a `gsx dev`-injected env value (or one set per-test) is picked up
+// without callers having to wire it through by hand. An explicit opts.target
+// always wins over the env var.
+export function devFallback(opts: DevFallbackOptions = {}): DevFallback {
+  const target = opts.target ?? process.env.GSX_DEV_UPSTREAM;
   const logFile = opts.logFile ?? "tmp/dev.log";
   const healthPath = opts.healthPath ?? "/healthz";
   const statusPath = opts.statusPath ?? "/__dev/status";
@@ -34,7 +44,7 @@ export function devFallback(opts: DevFallbackOptions): DevFallback {
     apply: "serve",
     configureServer(server) {
       server.middlewares.use(statusPath, async (_req, res) => {
-        const up = await backendUp(opts.target, healthPath);
+        const up = await backendUp(target, healthPath);
         res.setHeader("content-type", "application/json");
         res.setHeader("cache-control", "no-store");
         res.end(JSON.stringify({ up, log: readLogTail(logFile) }));
@@ -53,7 +63,10 @@ export function devFallback(opts: DevFallbackOptions): DevFallback {
 
 // backendUp resolves true once the backend answers healthPath with a non-5xx
 // status (up AND ready). A 5xx, transport error, or timeout is treated as down.
-export function backendUp(target: string, healthPath = "/healthz"): Promise<boolean> {
+// target is string | undefined because devFallback's opts.target is optional
+// (it falls back to GSX_DEV_UPSTREAM): with neither set, this deliberately
+// throws the same "Invalid URL" it always has — there is no backend to probe.
+export function backendUp(target: string | undefined, healthPath = "/healthz"): Promise<boolean> {
   return new Promise((resolve) => {
     let done = false;
     const finish = (v: boolean) => {

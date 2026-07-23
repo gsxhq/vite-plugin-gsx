@@ -262,7 +262,7 @@ devFallback(opts: DevFallbackOptions): { plugin: Plugin; configureProxy: (proxy:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `target` | `string` | _(required)_ | Go upstream origin, e.g. `"http://localhost:7777"`. |
+| `target` | `string` | `process.env.GSX_DEV_UPSTREAM` | Go upstream origin, e.g. `"http://localhost:7777"`. `gsx dev` injects `GSX_DEV_UPSTREAM`; set this explicitly only when running standalone (no `gsx dev`) and the env var is unset. |
 | `logFile` | `string` | `"tmp/dev.log"` | Dev log to tail in the interstitial. |
 | `healthPath` | `string` | `"/healthz"` | Backend liveness endpoint your Go server exposes. |
 | `statusPath` | `string` | `"/__dev/status"` | Status endpoint registered by the plugin. |
