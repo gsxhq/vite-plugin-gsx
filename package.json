@@ -1,6 +1,6 @@
 {
   "name": "@gsxhq/vite-plugin-gsx",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Vite dev plugin for gsx: watch .gsx, regenerate, error overlay, browser reload.",
   "type": "module",
   "license": "MIT",
