@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import type { ConfigEnv, Plugin, ViteDevServer } from "vite";
+import { posix } from "node:path";
+import { normalizePath, type ConfigEnv, type Plugin, type ViteDevServer } from "vite";
 import { resolveOptions, resolveDevPanel, type GsxOptions, type DevPanelSetting } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
 import { PanelChannel } from "./panel.js";
@@ -24,10 +25,36 @@ const PANEL_VIRTUAL_ID = "virtual:gsx-devpanel";
 const PANEL_NOOP_ID = "\0gsx-devpanel-noop";
 const PANEL_WRAPPER_ID = "\0gsx-devpanel-wrapper";
 
+// vite's own FS_PREFIX ("/@fs/") joined with a forward-slash absolute path —
+// mirrors what vite itself does internally (FS_PREFIX isn't part of vite's
+// public API, so the literal is pinned here). A plain template concat of the
+// raw OS path breaks on win32: fileURLToPath yields `C:\Users\...\client.js`,
+// and `/@fs${that}` is not a valid specifier.
+//
+// NOTE: vite's own exported `normalizePath` only strips backslash separators
+// when the *executing* process itself is win32 (it's `path.posix.normalize
+// (isWindows ? slash(id) : id)` — isWindows := process.platform === "win32"),
+// which is correct for vite's own use (it never normalizes a path string
+// produced by some *other* host) but not sufficient here in isolation: our
+// input always comes from this same process's own fileURLToPath/import.meta.url,
+// so a win32-shaped string only ever occurs when *this* process is already on
+// win32 — meaning the separator swap is unconditionally safe (never a
+// legitimate POSIX filename with a literal backslash). We do that swap
+// ourselves first so the result is deterministic on every host, then still
+// run it through vite's normalizePath for its (host-independent) posix path
+// collapsing.
+export function fsImportSpecifier(absPath: string): string {
+  return posix.join("/@fs", normalizePath(absPath.replace(/\\/g, "/")));
+}
+
 // clientPath is injectable for tests exercising the missing-file fallback;
 // production callers always rely on the default (derived from this module's
 // own location). devPanel defaults to the enabled/key:"d" setting so callers
 // that only care about the client-file fallback (tests) don't need to pass it.
+// devPanel is expected pre-validated (key lowercased, single a-z/0-9 char) —
+// the gsx() factory always builds it via resolveDevPanel; a caller
+// constructing panelPlugin directly with a hand-rolled object bypasses that
+// validation.
 export function panelPlugin(
   clientPath?: string,
   devPanel: DevPanelSetting = resolveDevPanel(undefined),
@@ -61,7 +88,7 @@ export function panelPlugin(
         // `/@fs/<path>` specifier is vite's own scheme for serving an
         // arbitrary absolute filesystem path, and the client module it
         // points at keeps a real import.meta.hot from vite's transform.
-        return `import { init } from "/@fs${resolvedClientPath}";\ninit({ key: ${JSON.stringify(devPanel.key)} });\n`;
+        return `import { init } from "${fsImportSpecifier(resolvedClientPath)}";\ninit({ key: ${JSON.stringify(devPanel.key)} });\n`;
       }
       return null;
     },

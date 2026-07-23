@@ -2,6 +2,9 @@
 // Delivered by a wrapper module (see panelPlugin in index.ts) that imports
 // this file and calls init({ key }); talks over vite's HMR websocket.
 import { isToggleKey, isEditable, renderStatus, buttonsDisabled } from "./client-logic.js";
+// Type-only: erased at build time, so dist/client.js keeps no runtime
+// reference to "vite" (it must stay a dependency-free browser module).
+import type { ViteHotContext } from "vite/types/hot.js";
 
 export interface InitOptions {
   key: string;
@@ -11,7 +14,7 @@ export interface InitOptions {
    * wiring without a real Vite dev server — production callers (the panel
    * wrapper module) never pass this.
    */
-  hot?: any;
+  hot?: ViteHotContext;
 }
 
 // Idempotence guard: the wrapper module only ever calls init() once per page
