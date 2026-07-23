@@ -1,17 +1,109 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import type { Plugin, ViteDevServer } from "vite";
-import { resolveOptions, type GsxOptions } from "./options.js";
+import { fileURLToPath } from "node:url";
+import { posix } from "node:path";
+import { normalizePath, type ConfigEnv, type Plugin, type ViteDevServer } from "vite";
+import { resolveOptions, resolveDevPanel, type GsxOptions, type DevPanelSetting } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
+import { PanelChannel } from "./panel.js";
 
 export type { GsxOptions };
 
-export function gsx(options: GsxOptions = {}): Plugin {
+// gsx apps have no vite index.html (HTML streams from the Go server), so
+// transformIndexHtml never fires. The panel is instead delivered as an
+// explicit entry import: `import "virtual:gsx-devpanel"` in the app's client
+// entry. This id resolves to a small wrapper module in dev (which imports the
+// built panel client, so it's transformed by vite → a real import.meta.hot)
+// and to an empty module in prod builds AND whenever devPanel is disabled
+// (the main plugin below is serve-only, so without this resolver a
+// `vite build` of that import would fail to resolve). devPanel:false only
+// turns off the UI — it does not touch /__gsx/cmd or the daemon/event
+// endpoints in the main plugin, which stay registered regardless (see
+// configureServer below).
+const PANEL_VIRTUAL_ID = "virtual:gsx-devpanel";
+const PANEL_NOOP_ID = "\0gsx-devpanel-noop";
+const PANEL_WRAPPER_ID = "\0gsx-devpanel-wrapper";
+
+// vite's own FS_PREFIX ("/@fs/") joined with a forward-slash absolute path —
+// mirrors what vite itself does internally (FS_PREFIX isn't part of vite's
+// public API, so the literal is pinned here). A plain template concat of the
+// raw OS path breaks on win32: fileURLToPath yields `C:\Users\...\client.js`,
+// and `/@fs${that}` is not a valid specifier.
+//
+// NOTE: vite's own exported `normalizePath` only strips backslash separators
+// when the *executing* process itself is win32 (it's `path.posix.normalize
+// (isWindows ? slash(id) : id)` — isWindows := process.platform === "win32"),
+// which is correct for vite's own use (it never normalizes a path string
+// produced by some *other* host) but not sufficient here in isolation: our
+// input always comes from this same process's own fileURLToPath/import.meta.url,
+// so a win32-shaped string only ever occurs when *this* process is already on
+// win32 — meaning the separator swap is unconditionally safe (never a
+// legitimate POSIX filename with a literal backslash). We do that swap
+// ourselves first so the result is deterministic on every host, then still
+// run it through vite's normalizePath for its (host-independent) posix path
+// collapsing.
+export function fsImportSpecifier(absPath: string): string {
+  return posix.join("/@fs", normalizePath(absPath.replace(/\\/g, "/")));
+}
+
+// clientPath is injectable for tests exercising the missing-file fallback;
+// production callers always rely on the default (derived from this module's
+// own location). devPanel defaults to the enabled/key:"d" setting so callers
+// that only care about the client-file fallback (tests) don't need to pass it.
+// devPanel is expected pre-validated (key lowercased, single a-z/0-9 char) —
+// the gsx() factory always builds it via resolveDevPanel; a caller
+// constructing panelPlugin directly with a hand-rolled object bypasses that
+// validation.
+export function panelPlugin(
+  clientPath?: string,
+  devPanel: DevPanelSetting = resolveDevPanel(undefined),
+): Plugin {
+  const resolvedClientPath =
+    clientPath ?? fileURLToPath(new URL("./client.js", import.meta.url));
+  let command: ConfigEnv["command"] | undefined;
+  let warnedMissingClient = false;
+  return {
+    name: "vite-plugin-gsx:panel",
+    config(_config, env) {
+      command = env.command;
+    },
+    resolveId(id) {
+      if (id !== PANEL_VIRTUAL_ID) return null;
+      if (command === "build") return PANEL_NOOP_ID;
+      if (!devPanel.enabled) return PANEL_NOOP_ID;
+      if (existsSync(resolvedClientPath)) return PANEL_WRAPPER_ID;
+      if (!warnedMissingClient) {
+        warnedMissingClient = true;
+        this.warn(
+          `[gsx] panel client not built (${resolvedClientPath}); run \`npm run build\` in @gsxhq/vite-plugin-gsx. Serving an empty module instead.`,
+        );
+      }
+      return PANEL_NOOP_ID;
+    },
+    load(id) {
+      if (id === PANEL_NOOP_ID) return "export {}";
+      if (id === PANEL_WRAPPER_ID) {
+        // Goes through vite's normal pipeline like any other import — the
+        // `/@fs/<path>` specifier is vite's own scheme for serving an
+        // arbitrary absolute filesystem path, and the client module it
+        // points at keeps a real import.meta.hot from vite's transform.
+        return `import { init } from "${fsImportSpecifier(resolvedClientPath)}";\ninit({ key: ${JSON.stringify(devPanel.key)} });\n`;
+      }
+      return null;
+    },
+  };
+}
+
+export function gsx(options: GsxOptions = {}): Plugin[] {
   // Shared ref so both configureServer and closeBundle can reach the child.
   let daemonChild: ReturnType<typeof spawn> | null = null;
+  // Resolved here (not from resolveOptions in configureServer) because
+  // panelPlugin needs it at plugin-construction time, before server.config.root
+  // exists.
+  const devPanel = resolveDevPanel(options.devPanel);
 
-  return {
+  const main: Plugin = {
     name: "vite-plugin-gsx",
     apply: "serve",
     // Called by Vite's pluginContainer.close() → environment.close() → server.close(),
@@ -23,6 +115,13 @@ export function gsx(options: GsxOptions = {}): Plugin {
     configureServer(server: ViteDevServer) {
       const opts = resolveOptions(options, server.config.root);
       const logger = server.config.logger;
+
+      // Registered unconditionally — even when devPanel is disabled. gsx
+      // dev's front-door respawn verification depends on the x-gsx header
+      // this endpoint stamps, regardless of whether the panel UI is shown.
+      const panel = new PanelChannel(logger, (p) => server.ws.send(p as any));
+      server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
+      server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
@@ -43,8 +142,11 @@ export function gsx(options: GsxOptions = {}): Plugin {
       const loggedDiagnostics = new Set<string>();
       server.ws.on("connection", (client: any) => {
         if (currentErrorPayload) client.send(JSON.stringify(currentErrorPayload));
+        const replay = panel.replayPayload();
+        if (replay) client.send(replay);
       });
       const applyEvent = (ev: any) => {
+        if (panel.applyStatus(ev)) return;
         if (ev.event !== "generated") {
           if (ev.event === "error") {
             logger.error(`[gsx] ${ev.message}`, { timestamp: true });
@@ -154,6 +256,8 @@ export function gsx(options: GsxOptions = {}): Plugin {
       }
     },
   };
+
+  return [main, panelPlugin(undefined, devPanel)];
 }
 
 function readSource(file: string): string | null {
