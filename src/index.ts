@@ -19,7 +19,12 @@ export type { GsxOptions };
 const PANEL_VIRTUAL_ID = "virtual:gsx-devpanel";
 const PANEL_NOOP_ID = "\0gsx-devpanel-noop";
 
-function panelPlugin(): Plugin {
+// clientPath is injectable for tests exercising the missing-file fallback;
+// production callers always rely on the default (derived from this module's
+// own location).
+export function panelPlugin(clientPath?: string): Plugin {
+  const resolvedClientPath =
+    clientPath ?? fileURLToPath(new URL("./client.js", import.meta.url));
   let command: ConfigEnv["command"] | undefined;
   let warnedMissingClient = false;
   return {
@@ -30,12 +35,11 @@ function panelPlugin(): Plugin {
     resolveId(id) {
       if (id !== PANEL_VIRTUAL_ID) return null;
       if (command === "build") return PANEL_NOOP_ID;
-      const clientPath = fileURLToPath(new URL("./client.js", import.meta.url));
-      if (existsSync(clientPath)) return clientPath;
+      if (existsSync(resolvedClientPath)) return resolvedClientPath;
       if (!warnedMissingClient) {
         warnedMissingClient = true;
         this.warn(
-          `[gsx] panel client not built (${clientPath}); run \`npm run build\` in @gsxhq/vite-plugin-gsx. Serving an empty module instead.`,
+          `[gsx] panel client not built (${resolvedClientPath}); run \`npm run build\` in @gsxhq/vite-plugin-gsx. Serving an empty module instead.`,
         );
       }
       return PANEL_NOOP_ID;
