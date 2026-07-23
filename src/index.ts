@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { Plugin, ViteDevServer } from "vite";
 import { resolveOptions, type GsxOptions } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
@@ -21,6 +22,9 @@ export function gsx(options: GsxOptions = {}): Plugin {
       daemonChild?.kill();
       daemonChild = null;
     },
+    transformIndexHtml() {
+      return [{ tag: "script", attrs: { type: "module", src: "/__gsx/panel.js" }, injectTo: "head" as const }];
+    },
     configureServer(server: ViteDevServer) {
       const opts = resolveOptions(options, server.config.root);
       const logger = server.config.logger;
@@ -28,6 +32,19 @@ export function gsx(options: GsxOptions = {}): Plugin {
       const panel = new PanelChannel(logger, (p) => server.ws.send(p as any));
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
+
+      // 2c. Panel client script. Built as dist/client.js next to this module.
+      server.middlewares.use("/__gsx/panel.js", (_req: any, res: any) => {
+        try {
+          const js = readFileSync(fileURLToPath(new URL("./client.js", import.meta.url)));
+          res.setHeader("content-type", "text/javascript");
+          res.end(js);
+        } catch {
+          // Running from src (tests): panel absent, not fatal.
+          res.statusCode = 404;
+          res.end("// gsx panel client not built");
+        }
+      });
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
