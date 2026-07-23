@@ -14,6 +14,14 @@ export class PanelChannel {
   constructor(
     private logger: { warn(msg: string, opts?: unknown): void },
     private broadcast: (payload: unknown) => void,
+    // GSX_DEV_TOKEN, when the gsx dev that spawned this vite passed one.
+    // Present ⇒ /__gsx/cmd requires the matching request header before
+    // releasing anything from the mailbox, and echoes this token (rather
+    // than "1") so gsx dev's respawn verification can confirm THIS is the
+    // vite it spawned, not some other gsx project's vite that raced onto the
+    // same freed port. Absent ⇒ exactly today's behavior (externally-run
+    // vite, --no-web, or a gsx dev predating this pairing).
+    private token?: string,
   ) {
     this.cmdMiddleware = this.cmdMiddleware.bind(this);
   }
@@ -40,9 +48,21 @@ export class PanelChannel {
   }
 
   cmdMiddleware(req: any, res: any): void {
-    res.setHeader("x-gsx", "1"); // respawn-verification handshake for gsx dev
+    // Respawn-verification handshake for gsx dev: echo the token when one is
+    // configured (so its verify only matches ITS OWN vite), else the plain
+    // "1" every plugin has always sent. Stamped unconditionally — even a
+    // 403/405 response carries it, so a foreign gsx dev's own verification
+    // still correctly fails against us instead of hanging/erroring.
+    res.setHeader("x-gsx", this.token ?? "1");
     if (req.method !== "GET") {
       res.statusCode = 405;
+      res.end();
+      return;
+    }
+    if (this.token !== undefined && req.headers["x-gsx-token"] !== this.token) {
+      // Reject before touching the mailbox: a rejected request must not
+      // drain or displace a queued command or an already-hanging poller.
+      res.statusCode = 403;
       res.end();
       return;
     }

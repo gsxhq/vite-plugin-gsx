@@ -119,7 +119,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       // Registered unconditionally — even when devPanel is disabled. gsx
       // dev's front-door respawn verification depends on the x-gsx header
       // this endpoint stamps, regardless of whether the panel UI is shown.
-      const panel = new PanelChannel(logger, (p) => server.ws.send(p as any));
+      const panel = new PanelChannel(logger, (p) => server.ws.send(p as any), process.env.GSX_DEV_TOKEN);
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
 
