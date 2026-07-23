@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import type { Plugin, ViteDevServer } from "vite";
 import { resolveOptions, type GsxOptions } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
+import { PanelChannel } from "./panel.js";
 
 export type { GsxOptions };
 
@@ -24,6 +25,10 @@ export function gsx(options: GsxOptions = {}): Plugin {
       const opts = resolveOptions(options, server.config.root);
       const logger = server.config.logger;
 
+      const panel = new PanelChannel(logger, (p) => server.ws.send(p as any));
+      server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
+      server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
+
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
         if (req.method !== "POST") {
@@ -43,8 +48,11 @@ export function gsx(options: GsxOptions = {}): Plugin {
       const loggedDiagnostics = new Set<string>();
       server.ws.on("connection", (client: any) => {
         if (currentErrorPayload) client.send(JSON.stringify(currentErrorPayload));
+        const replay = panel.replayPayload();
+        if (replay) client.send(replay);
       });
       const applyEvent = (ev: any) => {
+        if (panel.applyStatus(ev)) return;
         if (ev.event !== "generated") {
           if (ev.event === "error") {
             logger.error(`[gsx] ${ev.message}`, { timestamp: true });
