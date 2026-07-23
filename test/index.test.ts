@@ -62,6 +62,18 @@ describe("vite-plugin-gsx", () => {
     expect(res.status).toBe(204);
   });
 
+  it("/__gsx/cmd (with x-gsx header) stays active even when devPanel is disabled", async () => {
+    await start({ devPanel: false });
+
+    http = createHttp(server.middlewares);
+    await new Promise<void>((r) => http!.listen(0, r));
+    const port = (http.address() as { port: number }).port;
+
+    const res = await fetch(`http://localhost:${port}/__gsx/cmd?wait=0`);
+    expect(res.status).toBe(204);
+    expect(res.headers.get("x-gsx")).toBe("1");
+  });
+
   it("daemon mode starts gsx generate --watch with ndjson output", async () => {
     await start({
       daemon: true,

@@ -7,17 +7,24 @@ const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; al
 
 describe("isToggleKey", () => {
   it("cmd-d and ctrl-d toggle", () => {
-    expect(isToggleKey(key({ metaKey: true }), false)).toBe(true);
-    expect(isToggleKey(key({ ctrlKey: true }), false)).toBe(true);
-    expect(isToggleKey(key({ key: "D", ctrlKey: true }), false)).toBe(true);
+    expect(isToggleKey(key({ metaKey: true }), false, "d")).toBe(true);
+    expect(isToggleKey(key({ ctrlKey: true }), false, "d")).toBe(true);
+    expect(isToggleKey(key({ key: "D", ctrlKey: true }), false, "d")).toBe(true);
   });
   it("plain d, alt-d, other keys don't", () => {
-    expect(isToggleKey(key(), false)).toBe(false);
-    expect(isToggleKey(key({ metaKey: true, altKey: true }), false)).toBe(false);
-    expect(isToggleKey(key({ key: "e", metaKey: true }), false)).toBe(false);
+    expect(isToggleKey(key(), false, "d")).toBe(false);
+    expect(isToggleKey(key({ metaKey: true, altKey: true }), false, "d")).toBe(false);
+    expect(isToggleKey(key({ key: "e", metaKey: true }), false, "d")).toBe(false);
   });
   it("suppressed while editing", () => {
-    expect(isToggleKey(key({ metaKey: true }), true)).toBe(false);
+    expect(isToggleKey(key({ metaKey: true }), true, "d")).toBe(false);
+  });
+  it("honors a custom key, compared case-insensitively", () => {
+    expect(isToggleKey(key({ key: "k", ctrlKey: true }), false, "k")).toBe(true);
+    expect(isToggleKey(key({ key: "K", ctrlKey: true }), false, "k")).toBe(true);
+    expect(isToggleKey(key({ key: "k", ctrlKey: true }), false, "K")).toBe(true);
+    // the default "d" no longer matches once the key is rebound
+    expect(isToggleKey(key({ key: "d", ctrlKey: true }), false, "k")).toBe(false);
   });
 });
 

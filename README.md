@@ -228,6 +228,7 @@ All options are optional.
 | `paths` | `string[]` | `["."]` | Path args passed to the daemon's `generate` (only used when `daemon: true`). |
 | `cwd` | `string` | Vite config root | Working directory for the daemon command. |
 | `reloadEndpoint` | `string` | `"/__reload"` | HTTP endpoint that triggers a full browser reload. `gsx dev` (or your Go `NotifyReload`) POSTs here. |
+| `devPanel` | `boolean \| { key?: string }` | enabled, key `"d"` | Dev panel visibility/toggle key. `false` disables the panel UI; `{ key: "k" }` keeps it enabled but rebinds the toggle to Cmd/Ctrl-`k`. See [Dev panel](#dev-panel) below. |
 | ~~`watch`~~ | `string \| string[]` | — | **Deprecated / ignored.** The daemon owns watching. |
 | ~~`debounce`~~ | `number` | — | **Deprecated / ignored.** The daemon owns debouncing. |
 | ~~`generateOnStart`~~ | `boolean` | — | **Deprecated / ignored.** `gsx dev` / the daemon handle the initial generate. |
@@ -287,6 +288,10 @@ dev and to an empty module in production builds. It needs `gsx dev` on the
 other end to act on button presses and push status (not the standalone
 `daemon: true` mode). Commands ride a small mailbox this plugin drains via
 long-poll — no extra port or listener.
+
+Disable it with `gsx({ devPanel: false })`, or rebind the toggle key with
+`gsx({ devPanel: { key: "k" } })` (Cmd/Ctrl-K). `/__gsx/cmd` stays active
+either way — `gsx dev`'s front-door respawn verification depends on it.
 
 ## Notes
 

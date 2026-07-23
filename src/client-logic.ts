@@ -7,8 +7,8 @@ export interface KeyLike {
   altKey: boolean;
 }
 
-export function isToggleKey(e: KeyLike, editing: boolean): boolean {
-  return !editing && !e.altKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d";
+export function isToggleKey(e: KeyLike, editing: boolean, key: string): boolean {
+  return !editing && !e.altKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === key.toLowerCase();
 }
 
 export function isEditable(target: unknown): boolean {

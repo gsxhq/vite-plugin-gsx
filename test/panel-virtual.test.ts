@@ -3,6 +3,7 @@ import { createServer, build, type ViteDevServer, type Logger } from "vite";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gsx, panelPlugin } from "../src/index.js";
 
 // panelPlugin's resolveId resolves the client file relative to *its own*
@@ -30,8 +31,10 @@ afterEach(async () => {
   server = undefined;
 });
 
-describe("virtual:gsx-devpanel (serve)", () => {
-  it("resolves to the built client, transformed through vite's pipeline with a real HMR context", async () => {
+const clientDistPath = fileURLToPath(new URL("../dist/client.js", import.meta.url));
+
+describe("virtual:gsx-devpanel (serve, panel enabled)", () => {
+  it("default: resolves to a wrapper that imports the built client and calls init with key 'd'", async () => {
     const builtGsx = await loadBuiltGsx();
     server = await createServer({
       root: process.cwd(),
@@ -43,15 +46,71 @@ describe("virtual:gsx-devpanel (serve)", () => {
 
     const result = await server.transformRequest("virtual:gsx-devpanel");
     expect(result).not.toBeNull();
-    // Proof the HMR transform actually ran: vite's client-injection plugin
-    // rewrites `import.meta.hot` into a `createHotContext(...)` call during
-    // transformRequest. The raw file on disk (dist/client.js, unbuilt-vite
-    // ES module) contains neither `createHotContext` nor a rewritten
-    // `import.meta.hot` — only vite's dev transform produces it.
-    expect(result!.code).toContain("createHotContext");
-    // Sanity: it's actually the panel client, not an empty/noop module.
-    expect(result!.code).toContain("gsx-devpanel");
+    // The wrapper imports the real client module (vite may rewrite the raw
+    // /@fs/<abs path> specifier to a root-relative one when the file happens
+    // to sit inside the served root, as it does here) and calls init() with
+    // the resolved key — it does not inline the panel code itself.
+    expect(result!.code).toMatch(/from "[^"]*\/client\.js"/);
+    expect(result!.code).toContain(`init({ key: "d" })`);
   });
+
+  it("custom key: the wrapper passes it through to init()", async () => {
+    const builtGsx = await loadBuiltGsx();
+    server = await createServer({
+      root: process.cwd(),
+      logLevel: "silent",
+      server: { port: 0 },
+      plugins: builtGsx({ devPanel: { key: "k" }, generateOnStart: false }),
+    });
+    await server.listen();
+
+    const result = await server.transformRequest("virtual:gsx-devpanel");
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(`init({ key: "k" })`);
+  });
+
+  it("the imported client module itself still gets a real HMR context", async () => {
+    const builtGsx = await loadBuiltGsx();
+    server = await createServer({
+      root: process.cwd(),
+      logLevel: "silent",
+      server: { port: 0 },
+      plugins: builtGsx({ generateOnStart: false }),
+    });
+    await server.listen();
+
+    // Proof the HMR transform actually runs for the client module the wrapper
+    // imports: vite's client-injection plugin rewrites `import.meta.hot` into
+    // a `createHotContext(...)` call during transformRequest. The raw file on
+    // disk (dist/client.js) contains neither `createHotContext` nor a
+    // rewritten `import.meta.hot` — only vite's dev transform produces it.
+    const result = await server.transformRequest(`/@fs${clientDistPath}`);
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain("createHotContext");
+    expect(result!.code).toContain("function init(opts)");
+  });
+});
+
+describe("virtual:gsx-devpanel (serve, devPanel: false)", () => {
+  it("resolves to the empty noop module even in a running dev server", async () => {
+    server = await createServer({
+      root: process.cwd(),
+      logLevel: "silent",
+      server: { port: 0 },
+      plugins: gsx({ devPanel: false, generateOnStart: false }),
+    });
+    await server.listen();
+
+    const result = await server.transformRequest("virtual:gsx-devpanel");
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain("export {}");
+    expect(result!.code).not.toContain("init(");
+  });
+
+  // The /__gsx/cmd endpoint (and its x-gsx header) is unrelated to whether
+  // the panel UI is shown — gsx dev's front-door respawn verification
+  // depends on that endpoint existing regardless. Covered end-to-end in
+  // test/index.test.ts.
 });
 
 describe("virtual:gsx-devpanel (missing dist/client.js)", () => {

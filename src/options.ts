@@ -15,6 +15,12 @@ export interface GsxOptions {
   debounce?: number;
   /** Run an initial generate when the dev server starts. Default: true. */
   generateOnStart?: boolean;
+  /**
+   * Dev panel (Cmd/Ctrl-D status overlay). `false` disables it entirely;
+   * `{ key }` keeps it enabled but rebinds the toggle to Cmd/Ctrl-<key>.
+   * Default: enabled, key "d".
+   */
+  devPanel?: boolean | { key?: string };
 }
 
 export interface ResolvedOptions {
@@ -26,9 +32,34 @@ export interface ResolvedOptions {
   reloadEndpoint: string;
   debounce: number;
   generateOnStart: boolean;
+  devPanel: DevPanelSetting;
+}
+
+export interface DevPanelSetting {
+  enabled: boolean;
+  key: string;
 }
 
 const DEFAULT_GSX_GLOB = "**/*.gsx";
+const DEFAULT_DEVPANEL_KEY = "d";
+const VALID_DEVPANEL_KEY = /^[a-z0-9]$/;
+
+// Resolves the devPanel setting on its own (rather than folding it only into
+// resolveOptions) because panelPlugin needs it at gsx()-factory time, before
+// a Vite `root` (and thus resolveOptions' other inputs) is known — see the
+// gsx() factory in index.ts.
+export function resolveDevPanel(user: GsxOptions["devPanel"]): DevPanelSetting {
+  if (user === false) return { enabled: false, key: DEFAULT_DEVPANEL_KEY };
+  const requested = user === true || user === undefined ? undefined : user.key;
+  const lowered = requested?.toLowerCase();
+  // An invalid key (anything but a single a-z/0-9 character) falls back to
+  // the default silently: this function has no logger to warn through (only
+  // the gsx() factory/configureServer do, and threading one down here just
+  // for this would be a disproportionate restructure). A bad literal is a
+  // coding mistake caught by review/tests, not a runtime condition users hit.
+  const key = lowered !== undefined && VALID_DEVPANEL_KEY.test(lowered) ? lowered : DEFAULT_DEVPANEL_KEY;
+  return { enabled: true, key };
+}
 
 export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions {
   const watch =
@@ -46,5 +77,6 @@ export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions 
     reloadEndpoint: user.reloadEndpoint ?? "/__reload",
     debounce: user.debounce ?? 50,
     generateOnStart: user.generateOnStart ?? true,
+    devPanel: resolveDevPanel(user.devPanel),
   };
 }

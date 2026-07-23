@@ -1,9 +1,31 @@
-// Dev panel: <gsx-devpanel> in shadow DOM, toggled by Cmd-D/Ctrl-D.
-// Delivered via `import "virtual:gsx-devpanel"`; talks over vite's HMR websocket.
+// Dev panel: <gsx-devpanel> in shadow DOM, toggled by Cmd/Ctrl-<key>.
+// Delivered by a wrapper module (see panelPlugin in index.ts) that imports
+// this file and calls init({ key }); talks over vite's HMR websocket.
 import { isToggleKey, isEditable, renderStatus, buttonsDisabled } from "./client-logic.js";
 
-const hot = (import.meta as any).hot;
-if (hot) {
+export interface InitOptions {
+  key: string;
+  /**
+   * Injectable HMR context, defaulting to this module's own
+   * `import.meta.hot`. Exists so unit tests can exercise init()'s DOM/event
+   * wiring without a real Vite dev server — production callers (the panel
+   * wrapper module) never pass this.
+   */
+  hot?: any;
+}
+
+// Idempotence guard: the wrapper module only ever calls init() once per page
+// load, but guards against a stray double-import registering two hosts/
+// listeners.
+let initialized = false;
+
+export function init(opts: InitOptions): void {
+  if (initialized) return;
+  initialized = true;
+
+  const hot = opts.hot ?? (import.meta as any).hot;
+  if (!hot) return;
+
   let status: any = null;
   let inflight = false;
 
@@ -50,7 +72,7 @@ if (hot) {
   });
 
   window.addEventListener("keydown", (e) => {
-    if (!isToggleKey(e, isEditable(e.target))) return;
+    if (!isToggleKey(e, isEditable(e.target), opts.key)) return;
     e.preventDefault();
     const show = host.style.display === "none";
     host.style.display = show ? "" : "none";
