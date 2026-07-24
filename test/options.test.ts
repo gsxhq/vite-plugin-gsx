@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { resolve } from "node:path";
 import { resolveOptions, resolveDevPanel } from "../src/options.js";
 
 describe("resolveOptions", () => {
@@ -86,5 +87,57 @@ describe("resolveOptions devPanel plumbing", () => {
       enabled: true,
       key: "k",
     });
+  });
+});
+
+describe("resolveOptions devLogPath", () => {
+  const savedEnv = process.env.GSX_DEV_LOG;
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.GSX_DEV_LOG;
+    else process.env.GSX_DEV_LOG = savedEnv;
+  });
+
+  it("is null with no option and no env var", () => {
+    delete process.env.GSX_DEV_LOG;
+    expect(resolveOptions({}, "/proj").devLogPath).toBeNull();
+  });
+
+  it("devLog: false disables it even with the env var set", () => {
+    process.env.GSX_DEV_LOG = "/abs/env.log";
+    expect(resolveOptions({ devLog: false }, "/proj").devLogPath).toBeNull();
+  });
+
+  it('devLog: "" is treated as disabled, not resolved to the root directory', () => {
+    delete process.env.GSX_DEV_LOG;
+    expect(resolveOptions({ devLog: "" }, "/proj").devLogPath).toBeNull();
+  });
+
+  it("a relative devLog option resolves against root", () => {
+    delete process.env.GSX_DEV_LOG;
+    expect(resolveOptions({ devLog: "custom.log" }, "/proj").devLogPath).toBe(
+      resolve("/proj", "custom.log"),
+    );
+  });
+
+  it("the devLog option overrides the env var", () => {
+    process.env.GSX_DEV_LOG = "/abs/env.log";
+    expect(resolveOptions({ devLog: "custom.log" }, "/proj").devLogPath).toBe(
+      resolve("/proj", "custom.log"),
+    );
+  });
+
+  it("an absolute GSX_DEV_LOG (the gsx dev contract) passes through resolve() unchanged", () => {
+    process.env.GSX_DEV_LOG = "/abs/env.log";
+    expect(resolveOptions({}, "/proj").devLogPath).toBe("/abs/env.log");
+  });
+
+  it("a relative GSX_DEV_LOG resolves against root, same as the option path", () => {
+    process.env.GSX_DEV_LOG = "relative/env.log";
+    expect(resolveOptions({}, "/proj").devLogPath).toBe(resolve("/proj", "relative/env.log"));
+  });
+
+  it("an empty-string GSX_DEV_LOG is treated as disabled", () => {
+    process.env.GSX_DEV_LOG = "";
+    expect(resolveOptions({}, "/proj").devLogPath).toBeNull();
   });
 });

@@ -128,7 +128,33 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       // when [dev].log is set) or via the devLog option; endpoint absent when
       // neither is set. GET-only, capped: the panel polls a bounded tail, it
       // never streams the whole file.
-      if (opts.devLogPath) {
+      //
+      // Registered from configureServer's POST-HOOK (the function returned
+      // below), NOT inline like /__gsx/cmd and /__gsx/event above. Verified
+      // against the installed vite dist (node_modules/vite/dist/node/chunks/
+      // dep-Dm0c1Wj2.js:38813-38855, vite 6.4.3): vite awaits every plugin's
+      // configureServer hook first, THEN installs rejectInvalidRequestMiddleware
+      // / corsMiddleware / hostCheckMiddleware (its CVE-2025-24010 DNS-rebinding
+      // guard) as global, no-path middleware, and only THEN invokes the
+      // collected post-hook functions. Connect dispatches in registration
+      // order, so a middleware added synchronously here (pre-hook) sits
+      // *before* vite's host check and is never subject to it, while one
+      // added from the returned function sits *after* it and always is.
+      // Without this, a DNS-rebinding page (browser resolves attacker.com ->
+      // 127.0.0.1) is same-origin to the browser but still carries a foreign
+      // Host header — vite's host check exists precisely to catch that, and
+      // an un-gated GET of the backend log (stdout/stderr: request logs,
+      // stack traces, whatever the app prints) must not bypass it.
+      //
+      // ASYMMETRY: /__gsx/cmd and /__gsx/event stay pre-hook (registered
+      // directly above/below, not from this return). Both are gsx dev's own
+      // server-to-server calls (the front-door respawn probe, codegen event
+      // POSTs) and arrive with whatever Host the gsx process happens to send
+      // — host-checking them would break gsx dev itself, not attackers.
+      // /__gsx/log's only consumer is the browser dev panel, so unlike those
+      // two it both can and must be host-checked.
+      const registerDevLogEndpoint = () => {
+        if (!opts.devLogPath) return;
         const logPath = opts.devLogPath;
         const DEFAULT_TAIL = 64 << 10; // 64 KiB
         const MAX_TAIL = 1 << 20; // 1 MiB
@@ -141,22 +167,66 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           let tail = DEFAULT_TAIL;
           const t = new URL(req.url ?? "/", "http://gsx").searchParams.get("tail");
           if (t !== null) {
-            const n = Number(t);
-            if (Number.isFinite(n) && n > 0) tail = Math.min(Math.floor(n), MAX_TAIL);
+            // Explicit integer bounds, not Number()+floor: a permissive
+            // Number() parse followed by floor lets fractional/negative
+            // values ("0.5", "-5") silently through by rounding them into
+            // some other in-range integer — "?tail=0.5" used to floor to 0
+            // and return an empty 200 as if that had been requested on
+            // purpose. Anything that isn't a plain non-negative integer
+            // literal is a malformed request, not a value to coerce.
+            if (!/^\d+$/.test(t)) {
+              res.statusCode = 400;
+              res.end();
+              return;
+            }
+            tail = Math.min(Number.parseInt(t, 10), MAX_TAIL);
           }
           try {
             const fh = await fsp.open(logPath, "r");
             try {
-              const { size } = await fh.stat();
-              const start = Math.max(0, size - tail);
-              const buf = Buffer.alloc(size - start);
-              await fh.read(buf, 0, buf.length, start);
+              let { size } = await fh.stat();
+              let start = Math.max(0, size - tail);
+              let buf = Buffer.alloc(size - start);
+              let { bytesRead } = await fh.read(buf, 0, buf.length, start);
+              if (bytesRead < buf.length) {
+                // The file changed size between stat and read — gsx dev's
+                // os.Create truncates [dev].log on every dev-server restart,
+                // and this stat->read window is exactly where that race
+                // lands. A stable file always yields bytesRead === buf.length
+                // here (we only ever ask for bytes the stat said exist), so a
+                // short read is proof the size moved, not a heuristic guess.
+                // Re-stat and re-read once against the now-current size so
+                // the body and its x-gsx-log-start offset describe one
+                // coherent file state instead of a stale offset paired with
+                // freshly-truncated bytes.
+                ({ size } = await fh.stat());
+                start = Math.max(0, size - tail);
+                buf = Buffer.alloc(size - start);
+                ({ bytesRead } = await fh.read(buf, 0, buf.length, start));
+              }
+              let body = buf.subarray(0, bytesRead);
+              if (start > 0) {
+                // Cutting mid-file can land inside a multi-byte UTF-8
+                // sequence; a continuation byte (10xxxxxx, i.e. top two bits
+                // 10) at the very front decodes as U+FFFD under the
+                // "text/plain; charset=utf-8" we declare. Drop up to 3
+                // leading continuation bytes (the max a UTF-8 sequence can
+                // have) so the body starts on a rune boundary, and report the
+                // adjusted offset — start===0 never needs this since there's
+                // nothing before it to have cut into.
+                let cut = 0;
+                while (cut < body.length && cut < 3 && ((body[cut] ?? 0) & 0xc0) === 0x80) cut++;
+                if (cut > 0) {
+                  body = body.subarray(cut);
+                  start += cut;
+                }
+              }
               res.statusCode = 200;
               res.setHeader("content-type", "text/plain; charset=utf-8");
               // Where in the file this tail begins — non-zero tells the
               // panel the response is truncated mid-file.
               res.setHeader("x-gsx-log-start", String(start));
-              res.end(buf);
+              res.end(body);
             } finally {
               await fh.close();
             }
@@ -165,7 +235,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
             res.end();
           }
         });
-      }
+      };
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
@@ -264,7 +334,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           logger.error("[gsx] empty command option", {
             timestamp: true,
           });
-          return;
+          return registerDevLogEndpoint;
         }
         const child = spawn(bin, daemonArgs, { cwd: opts.cwd });
         // unref so the daemon doesn't prevent Vite's process from exiting if
@@ -298,6 +368,8 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           daemonChild = null;
         });
       }
+
+      return registerDevLogEndpoint;
     },
   };
 

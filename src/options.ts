@@ -89,13 +89,24 @@ export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions 
     debounce: user.debounce ?? 50,
     generateOnStart: user.generateOnStart ?? true,
     devPanel: resolveDevPanel(user.devPanel),
-    // Env read here, at resolve time (configureServer), not module load —
-    // same late-read rule as devFallback's GSX_DEV_UPSTREAM.
-    devLogPath:
-      user.devLog === false
-        ? null
-        : user.devLog !== undefined
-          ? resolve(root, user.devLog)
-          : (process.env.GSX_DEV_LOG ?? null),
+    devLogPath: resolveDevLogPath(user.devLog, root),
   };
+}
+
+// Env read here, at resolve time (configureServer), not module load — same
+// late-read rule as devFallback's GSX_DEV_UPSTREAM. Both the option and the
+// env var are resolved against `root` the same way: `resolve()` leaves an
+// already-absolute path untouched (the gsx contract always injects an
+// absolute GSX_DEV_LOG), so this only changes behavior for a hand-set
+// relative env override, which previously opened against Node's cwd instead
+// of the project root — an asymmetry with the option path that had no
+// justification. `""` (option or env) means "no path", same as `false`,
+// rather than resolving to the root directory itself (which is a real path
+// that exists — `fsp.open` on it fails with EISDIR, a 500, not the intended
+// "endpoint absent").
+function resolveDevLogPath(devLog: GsxOptions["devLog"], root: string): string | null {
+  if (devLog === false || devLog === "") return null;
+  if (devLog !== undefined) return resolve(root, devLog);
+  const fromEnv = process.env.GSX_DEV_LOG;
+  return fromEnv ? resolve(root, fromEnv) : null;
 }
