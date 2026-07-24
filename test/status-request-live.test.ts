@@ -12,6 +12,8 @@ import { gsx } from "../src/index.js";
 // event-endpoint.test.ts's `fakeWrappedClient()` for the fixed unit-level
 // mocks — this test is the end-to-end backstop above them.
 let server: ViteDevServer | undefined;
+import WebSocket from "ws";
+
 let socket: WebSocket | undefined;
 
 afterEach(async () => {
