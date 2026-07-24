@@ -66,6 +66,26 @@ describe("renderStatus", () => {
   });
 });
 
+describe("renderStatus — server upstream", () => {
+  it("renders the resolved upstream origin when present", () => {
+    const html = renderStatus({ server: { upstream: "http://localhost:8890", healthy: true } });
+    expect(html).toContain("http://localhost:8890");
+    expect(html).toContain("healthy");
+  });
+  it("falls back to :port when upstream is absent (older gsx dev)", () => {
+    const html = renderStatus({ server: { port: "7777", healthy: true } });
+    expect(html).toContain(":7777");
+  });
+  it("degrades sanely when both upstream and port are absent", () => {
+    const html = renderStatus({ server: { healthy: false } });
+    expect(html).not.toContain("undefined");
+  });
+  it("escapes the upstream string (another process's output)", () => {
+    const html = renderStatus({ server: { upstream: "<img src=x onerror=alert(1)>", healthy: true } });
+    expect(html).not.toContain("<img");
+  });
+});
+
 describe("buttonsDisabled", () => {
   it("disabled before the first status arrives, regardless of inflight", () => {
     expect(buttonsDisabled(null, false)).toBe(true);
