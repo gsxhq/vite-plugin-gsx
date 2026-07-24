@@ -1,14 +1,72 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, promises as fsp } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { posix } from "node:path";
+import { isIP } from "node:net";
 import { normalizePath, type ConfigEnv, type Plugin, type ViteDevServer } from "vite";
 import { resolveOptions, resolveDevPanel, type GsxOptions, type DevPanelSetting } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
 import { PanelChannel } from "./panel.js";
 
 export type { GsxOptions };
+
+// Faithful port of vite's own host-check semantics — NOT an approximation.
+// Ported from the installed vite@6.4.3 dist
+// (node_modules/vite/dist/node/chunks/dep-Dm0c1Wj2.js:32262-32338):
+// `isHostAllowedWithoutCache` (the pure predicate) and the `hostCheckMiddleware`
+// call site around it. We can't reuse vite's own `hostCheckMiddleware`
+// (it's not exported), so this mirrors its logic byte-for-byte in spirit:
+// file:/extension: protocols always pass; a bracketed literal is checked as
+// an IPv6 address; the port is stripped before matching; a bare IPv4 literal
+// always passes; `localhost`/`*.localhost` always pass; then vite's own
+// precomputed `additionalAllowedHosts` (server.host / hmr.host / origin
+// hostname — an internal ResolvedConfig field, not in vite's public types,
+// but reading it directly means we see exactly the value vite computed for
+// THIS server rather than re-deriving it and risking drift) and finally the
+// user's `server.allowedHosts` list, including its leading-dot wildcard
+// form. No caching layer (vite's is a perf optimization irrelevant here).
+const FILE_OR_EXTENSION_PROTOCOL_RE = /^(?:file|.+-extension):/i;
+
+function additionalAllowedHosts(server: ViteDevServer): string[] {
+  return (
+    (server.config as unknown as { additionalAllowedHosts?: string[] }).additionalAllowedHosts ?? []
+  );
+}
+
+function isHostAllowedForDevLog(server: ViteDevServer, hostHeader: string | undefined): boolean {
+  const allowedHosts = server.config.server.allowedHosts;
+  if (allowedHosts === true) return true;
+  // Mirrors vite's own install gate for hostCheckMiddleware — it's only
+  // `.use()`'d when `allowedHosts !== true && !serverConfig.https`
+  // (dep-Dm0c1Wj2.js:38826): DNS rebinding is a plain-http attack (a rebound
+  // hostname can't present a certificate the browser will accept for it), so
+  // vite skips the check entirely under https. Checking unconditionally here
+  // would be *stricter* than vite — a false 403 on /__gsx/log for an https
+  // dev server with a custom hostname, while vite itself serves everything
+  // else. A faithful port has to include the gate, not just the predicate.
+  if (server.config.server.https) return true;
+  if (!hostHeader) return false;
+  if (FILE_OR_EXTENSION_PROTOCOL_RE.test(hostHeader)) return true;
+  const trimmedHost = hostHeader.trim();
+  if (trimmedHost[0] === "[") {
+    const endIpv6 = trimmedHost.indexOf("]");
+    if (endIpv6 < 0) return false;
+    return isIP(trimmedHost.slice(1, endIpv6)) === 6;
+  }
+  const colonPos = trimmedHost.indexOf(":");
+  const hostname = colonPos === -1 ? trimmedHost : trimmedHost.slice(0, colonPos);
+  if (isIP(hostname) === 4) return true;
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  for (const extra of additionalAllowedHosts(server)) {
+    if (extra === hostname) return true;
+  }
+  for (const allowed of allowedHosts ?? []) {
+    if (allowed === hostname) return true;
+    if (allowed[0] === "." && (allowed.slice(1) === hostname || hostname.endsWith(allowed))) return true;
+  }
+  return false;
+}
 
 // gsx apps have no vite index.html (HTML streams from the Go server), so
 // transformIndexHtml never fires. The panel is instead delivered as an
@@ -122,6 +180,128 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       const panel = new PanelChannel(logger, (p) => server.ws.send(p as any), process.env.GSX_DEV_TOKEN);
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
+
+      // Backend log tail — /__gsx/log (dev panel's "read the log" source).
+      // The path arrives on the dev env bus (GSX_DEV_LOG, injected by gsx dev
+      // when [dev].log is set) or via the devLog option; endpoint absent when
+      // neither is set. GET-only, capped: the panel polls a bounded tail, it
+      // never streams the whole file.
+      //
+      // Registered PRE-hook, directly here alongside /__gsx/cmd — NOT from
+      // configureServer's returned post-hook. A post-hook registration does
+      // sit after vite's own hostCheckMiddleware in the stack (true, and
+      // still the right mental model for *that* middleware), but it also
+      // sits after vite's transformMiddleware, which is installed before any
+      // post-hook runs. transformMiddleware's `isJSRequest` heuristic treats
+      // any extension-less GET as a module request, tries to resolve
+      // `/__gsx/log` as one, fails, and answers 404 itself — the request
+      // never reaches a post-hook-registered handler at all. (Confirmed live
+      // against a real vite@6.4.3 createServer: GET 404s, POST correctly
+      // 405s from the handler, proving it's registered but unreachable for
+      // GET.) So instead: register pre-hook like /__gsx/cmd, and enforce the
+      // CVE-2025-24010 DNS-rebinding guard ourselves, in-handler, as a
+      // faithful port of vite's own hostCheckMiddleware semantics
+      // (isHostAllowedForDevLog above) rather than leaning on registration
+      // order at all.
+      //
+      // ASYMMETRY: /__gsx/cmd and /__gsx/event stay entirely unchecked. Both
+      // are gsx dev's own server-to-server calls (the front-door respawn
+      // probe, codegen event POSTs) and arrive with whatever Host the gsx
+      // process happens to send — host-checking them would break gsx dev
+      // itself, not attackers. /__gsx/log's only consumer is the browser dev
+      // panel, so unlike those two it both can and must be host-checked.
+      if (opts.devLogPath) {
+        const logPath = opts.devLogPath;
+        const DEFAULT_TAIL = 64 << 10; // 64 KiB
+        const MAX_TAIL = 1 << 20; // 1 MiB
+        server.middlewares.use("/__gsx/log", async (req, res) => {
+          const hostHeader = req.headers?.host;
+          if (!isHostAllowedForDevLog(server, hostHeader)) {
+            const hostname = hostHeader?.replace(/:\d+$/, "");
+            res.statusCode = 403;
+            res.setHeader("content-type", "text/plain");
+            res.end(
+              `Blocked request. This host (${JSON.stringify(hostname)}) is not allowed.\nTo allow this host, add ${JSON.stringify(hostname)} to \`server.allowedHosts\` in vite.config.js.`,
+            );
+            return;
+          }
+          if (req.method !== "GET") {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          let tail = DEFAULT_TAIL;
+          const t = new URL(req.url ?? "/", "http://gsx").searchParams.get("tail");
+          if (t !== null) {
+            // Explicit integer bounds, not Number()+floor: a permissive
+            // Number() parse followed by floor lets fractional/negative
+            // values ("0.5", "-5") silently through by rounding them into
+            // some other in-range integer — "?tail=0.5" used to floor to 0
+            // and return an empty 200 as if that had been requested on
+            // purpose. Anything that isn't a plain non-negative integer
+            // literal is a malformed request, not a value to coerce.
+            if (!/^\d+$/.test(t)) {
+              res.statusCode = 400;
+              res.end();
+              return;
+            }
+            tail = Math.min(Number.parseInt(t, 10), MAX_TAIL);
+          }
+          try {
+            const fh = await fsp.open(logPath, "r");
+            try {
+              let { size } = await fh.stat();
+              let start = Math.max(0, size - tail);
+              let buf = Buffer.alloc(size - start);
+              let { bytesRead } = await fh.read(buf, 0, buf.length, start);
+              if (bytesRead < buf.length) {
+                // The file changed size between stat and read — gsx dev's
+                // os.Create truncates [dev].log on every dev-server restart,
+                // and this stat->read window is exactly where that race
+                // lands. A stable file always yields bytesRead === buf.length
+                // here (we only ever ask for bytes the stat said exist), so a
+                // short read is proof the size moved, not a heuristic guess.
+                // Re-stat and re-read once against the now-current size so
+                // the body and its x-gsx-log-start offset describe one
+                // coherent file state instead of a stale offset paired with
+                // freshly-truncated bytes.
+                ({ size } = await fh.stat());
+                start = Math.max(0, size - tail);
+                buf = Buffer.alloc(size - start);
+                ({ bytesRead } = await fh.read(buf, 0, buf.length, start));
+              }
+              let body = buf.subarray(0, bytesRead);
+              if (start > 0) {
+                // Cutting mid-file can land inside a multi-byte UTF-8
+                // sequence; a continuation byte (10xxxxxx, i.e. top two bits
+                // 10) at the very front decodes as U+FFFD under the
+                // "text/plain; charset=utf-8" we declare. Drop up to 3
+                // leading continuation bytes (the max a UTF-8 sequence can
+                // have) so the body starts on a rune boundary, and report the
+                // adjusted offset — start===0 never needs this since there's
+                // nothing before it to have cut into.
+                let cut = 0;
+                while (cut < body.length && cut < 3 && ((body[cut] ?? 0) & 0xc0) === 0x80) cut++;
+                if (cut > 0) {
+                  body = body.subarray(cut);
+                  start += cut;
+                }
+              }
+              res.statusCode = 200;
+              res.setHeader("content-type", "text/plain; charset=utf-8");
+              // Where in the file this tail begins — non-zero tells the
+              // panel the response is truncated mid-file.
+              res.setHeader("x-gsx-log-start", String(start));
+              res.end(body);
+            } finally {
+              await fh.close();
+            }
+          } catch (err) {
+            res.statusCode = (err as NodeJS.ErrnoException)?.code === "ENOENT" ? 404 : 500;
+            res.end();
+          }
+        });
+      }
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {

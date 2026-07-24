@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 export interface GsxOptions {
   /** Spawn gsx generate --watch instead of receiving events from gsx dev. Default: false. */
   daemon?: boolean;
@@ -21,6 +23,13 @@ export interface GsxOptions {
    * Default: enabled, key "d".
    */
   devPanel?: boolean | { key?: string };
+  /**
+   * Backend log file served read-only at /__gsx/log (for the dev panel).
+   * Default: `process.env.GSX_DEV_LOG` — the absolute path `gsx dev`
+   * injects when gsx.toml's `[dev].log` is set. A string overrides the
+   * path (resolved against the Vite root); `false` disables the endpoint.
+   */
+  devLog?: string | false;
 }
 
 export interface ResolvedOptions {
@@ -33,6 +42,8 @@ export interface ResolvedOptions {
   debounce: number;
   generateOnStart: boolean;
   devPanel: DevPanelSetting;
+  /** Absolute backend-log path to serve at /__gsx/log; null = endpoint off. */
+  devLogPath: string | null;
 }
 
 export interface DevPanelSetting {
@@ -78,5 +89,24 @@ export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions 
     debounce: user.debounce ?? 50,
     generateOnStart: user.generateOnStart ?? true,
     devPanel: resolveDevPanel(user.devPanel),
+    devLogPath: resolveDevLogPath(user.devLog, root),
   };
+}
+
+// Env read here, at resolve time (configureServer), not module load — same
+// late-read rule as devFallback's GSX_DEV_UPSTREAM. Both the option and the
+// env var are resolved against `root` the same way: `resolve()` leaves an
+// already-absolute path untouched (the gsx contract always injects an
+// absolute GSX_DEV_LOG), so this only changes behavior for a hand-set
+// relative env override, which previously opened against Node's cwd instead
+// of the project root — an asymmetry with the option path that had no
+// justification. `""` (option or env) means "no path", same as `false`,
+// rather than resolving to the root directory itself (which is a real path
+// that exists — `fsp.open` on it fails with EISDIR, a 500, not the intended
+// "endpoint absent").
+function resolveDevLogPath(devLog: GsxOptions["devLog"], root: string): string | null {
+  if (devLog === false || devLog === "") return null;
+  if (devLog !== undefined) return resolve(root, devLog);
+  const fromEnv = process.env.GSX_DEV_LOG;
+  return fromEnv ? resolve(root, fromEnv) : null;
 }
