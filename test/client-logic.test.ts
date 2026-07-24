@@ -179,6 +179,18 @@ describe("phaseLine", () => {
     expect(phaseLine(null, now)).toBe("");
     expect(phaseLine({}, now)).toBe("");
   });
+  it("idle: suppresses the elapsed head (renderStatus's phase row already says idle), keeps last cycle", () => {
+    const status = {
+      phase: "idle",
+      phaseSince: "2026-07-24T12:00:00Z",
+      lastCycle: { durationMs: 130000 },
+    };
+    expect(phaseLine(status, now)).toBe("last cycle 2m10s");
+  });
+  it("idle with no cycle yet: empty (a manually-opened panel on a fresh idle project shows no phase line)", () => {
+    const status = { phase: "idle", phaseSince: "2026-07-24T12:00:00Z" };
+    expect(phaseLine(status, now)).toBe("");
+  });
 });
 
 describe("panel open-state machine", () => {

@@ -81,6 +81,18 @@ function humanizeDuration(ms: number): string {
 export function phaseLine(status: any, nowMs: number): string {
   const phase = status?.phase;
   if (typeof phase !== "string" || phase === "") return "";
+  const durationMs = status.lastCycle?.durationMs;
+  const hasLastCycle =
+    typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0;
+
+  if (phase === "idle") {
+    // idle isn't "running" — a ticking "idle… started 42s ago" head reads as
+    // if something named idle is in progress, and the renderStatus rows
+    // directly below already say "phase: idle". Show only the last-cycle
+    // summary (nothing at all if there hasn't been a cycle yet).
+    return hasLastCycle ? `last cycle ${humanizeDuration(durationMs)}` : "";
+  }
+
   let head = `${phase}…`;
   const since = status.phaseSince;
   if (typeof since === "string" && since !== "") {
@@ -94,10 +106,7 @@ export function phaseLine(status: any, nowMs: number): string {
     }
   }
   const segments = [head];
-  const durationMs = status.lastCycle?.durationMs;
-  if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
-    segments.push(`last cycle ${humanizeDuration(durationMs)}`);
-  }
+  if (hasLastCycle) segments.push(`last cycle ${humanizeDuration(durationMs)}`);
   return segments.join(" · ");
 }
 
