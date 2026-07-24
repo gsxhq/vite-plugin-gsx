@@ -240,6 +240,27 @@ describe("gsx:status-request", () => {
   // pull (sent by the panel right after it registers its listener) targets
   // only the requesting client, complementing (not replacing) the
   // connection-time replay covered above.
+  //
+  // The `client` a custom-event listener (anything not in vite's
+  // wsServerEvents allowlist — "gsx:status-request" isn't) receives is
+  // vite's WRAPPED per-client channel: `.send` is the two-overload
+  // `NormalizedHotChannelClient` contract (`.send(event, data?)` builds the
+  // `{type:"custom",event,data}` envelope for you — passing it a single
+  // *string* is interpreted as the event NAME, not a raw wire frame). This
+  // fake models exactly that (see vite's own `getSocketClient`), not a raw
+  // socket's `.send(string)` — a fake that just JSON.parses whatever single
+  // argument it received (as this test previously did) can't tell a correct
+  // `.send("gsx:status", data)` call apart from the bug it exists to catch.
+  function fakeWrappedClient() {
+    const received: Array<{ type: "custom"; event: string; data: unknown }> = [];
+    return {
+      received,
+      send: (event: string, data?: unknown) => {
+        received.push({ type: "custom", event, data });
+      },
+    };
+  }
+
   it("replies to the requesting client with the cached status, not a broadcast", async () => {
     const p = gsx();
     const s = fakeServer();
@@ -254,18 +275,17 @@ describe("gsx:status-request", () => {
     });
     s.sent.length = 0;
 
-    const clientSent: any[] = [];
-    const client = { send: (msg: any) => clientSent.push(msg) };
+    const client = fakeWrappedClient();
     expect(s.wsHandlers["gsx:status-request"]).toBeTypeOf("function");
     s.wsHandlers["gsx:status-request"]!({}, client);
 
-    expect(clientSent.length).toBe(1);
-    const parsed = JSON.parse(clientSent[0]);
-    expect(parsed).toEqual({
-      type: "custom",
-      event: "gsx:status",
-      data: { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } },
-    });
+    expect(client.received).toEqual([
+      {
+        type: "custom",
+        event: "gsx:status",
+        data: { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } },
+      },
+    ]);
     // Targeted, not broadcast: server.ws.send (the broadcast channel) saw nothing new.
     expect(s.sent).toEqual([]);
   });
@@ -275,8 +295,8 @@ describe("gsx:status-request", () => {
     const s = fakeServer();
     (p[0] as any).configureServer(s);
 
-    const clientSent: any[] = [];
-    s.wsHandlers["gsx:status-request"]!({}, { send: (msg: any) => clientSent.push(msg) });
-    expect(clientSent).toEqual([]);
+    const client = fakeWrappedClient();
+    s.wsHandlers["gsx:status-request"]!({}, client);
+    expect(client.received).toEqual([]);
   });
 });
