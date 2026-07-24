@@ -232,3 +232,71 @@ describe("/__gsx/event", () => {
     expect(clientSent.some((m) => JSON.parse(m).type === "error")).toBe(false);
   });
 });
+
+describe("gsx:status-request", () => {
+  // Fixes a real race: vite's HMR client drops custom events that arrive
+  // before a listener is registered, and the panel's own `gsx:status`
+  // listener registration races the ws handshake during module load. This
+  // pull (sent by the panel right after it registers its listener) targets
+  // only the requesting client, complementing (not replacing) the
+  // connection-time replay covered above.
+  //
+  // The `client` a custom-event listener (anything not in vite's
+  // wsServerEvents allowlist — "gsx:status-request" isn't) receives is
+  // vite's WRAPPED per-client channel: `.send` is the two-overload
+  // `NormalizedHotChannelClient` contract (`.send(event, data?)` builds the
+  // `{type:"custom",event,data}` envelope for you — passing it a single
+  // *string* is interpreted as the event NAME, not a raw wire frame). This
+  // fake models exactly that (see vite's own `getSocketClient`), not a raw
+  // socket's `.send(string)` — a fake that just JSON.parses whatever single
+  // argument it received (as this test previously did) can't tell a correct
+  // `.send("gsx:status", data)` call apart from the bug it exists to catch.
+  function fakeWrappedClient() {
+    const received: Array<{ type: "custom"; event: string; data: unknown }> = [];
+    return {
+      received,
+      send: (event: string, data?: unknown) => {
+        received.push({ type: "custom", event, data });
+      },
+    };
+  }
+
+  it("replies to the requesting client with the cached status, not a broadcast", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+
+    // Cache a status the same way gsx dev would: through /__gsx/event.
+    await call(s.handlers["/__gsx/event"]!, {
+      event: "status",
+      phase: "building",
+      server: { healthy: true, port: "7777" },
+      frontDoor: { state: "up", restarts: 0 },
+    });
+    s.sent.length = 0;
+
+    const client = fakeWrappedClient();
+    expect(s.wsHandlers["gsx:status-request"]).toBeTypeOf("function");
+    s.wsHandlers["gsx:status-request"]!({}, client);
+
+    expect(client.received).toEqual([
+      {
+        type: "custom",
+        event: "gsx:status",
+        data: { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } },
+      },
+    ]);
+    // Targeted, not broadcast: server.ws.send (the broadcast channel) saw nothing new.
+    expect(s.sent).toEqual([]);
+  });
+
+  it("is a no-op before any status has ever arrived (no crash, nothing sent)", () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+
+    const client = fakeWrappedClient();
+    s.wsHandlers["gsx:status-request"]!({}, client);
+    expect(client.received).toEqual([]);
+  });
+});

@@ -228,7 +228,7 @@ All options are optional.
 | `paths` | `string[]` | `["."]` | Path args passed to the daemon's `generate` (only used when `daemon: true`). |
 | `cwd` | `string` | Vite config root | Working directory for the daemon command. |
 | `reloadEndpoint` | `string` | `"/__reload"` | HTTP endpoint that triggers a full browser reload. `gsx dev` (or your Go `NotifyReload`) POSTs here. |
-| `devPanel` | `boolean \| { key?: string }` | enabled, key `"d"` | Dev panel visibility/toggle key. `false` disables the panel UI; `{ key: "k" }` keeps it enabled but rebinds the toggle to Cmd/Ctrl-`k`. See [Dev panel](#dev-panel) below. |
+| `devPanel` | `boolean \| { key?: string; autoShow?: number \| false }` | enabled, key `"d"`, `autoShow` 3000ms | Dev panel visibility/toggle key and auto-show delay. `false` disables the panel UI; `{ key: "k" }` keeps it enabled but rebinds the toggle to Cmd/Ctrl-`k`; `{ autoShow: 5000 }` changes how long a still-running cycle waits before popping the panel open on its own, and `autoShow: false` disables that (Cmd-D still works). See [Dev panel](#dev-panel) below. |
 | ~~`watch`~~ | `string \| string[]` | — | **Deprecated / ignored.** The daemon owns watching. |
 | ~~`debounce`~~ | `number` | — | **Deprecated / ignored.** The daemon owns debouncing. |
 | ~~`generateOnStart`~~ | `boolean` | — | **Deprecated / ignored.** `gsx dev` / the daemon handle the initial generate. |
@@ -292,6 +292,11 @@ long-poll — no extra port or listener.
 Disable it with `gsx({ devPanel: false })`, or rebind the toggle key with
 `gsx({ devPanel: { key: "k" } })` (Cmd/Ctrl-K). `/__gsx/cmd` stays active
 either way — `gsx dev`'s front-door respawn verification depends on it.
+
+It also auto-shows itself once a cycle has been running for `autoShow`
+milliseconds (default 3000; set `false` to require Cmd-D), and when
+`gsx dev` is run with `[dev].log` configured it grows a log box that tails
+the backend's output for the duration of the build.
 
 ## Notes
 

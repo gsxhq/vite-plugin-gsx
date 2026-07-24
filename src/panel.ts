@@ -47,6 +47,36 @@ export class PanelChannel {
     return JSON.stringify({ type: "custom", event: "gsx:status", data: this.currentStatus });
   }
 
+  // Answers a panel's `gsx:status-request` pull (sent right after it
+  // registers its `gsx:status` listener — see client.ts init()). Targeted at
+  // the requesting client rather than broadcast: the connection-time replay
+  // in index.ts's `ws.on("connection", ...)` already covers every client
+  // once, so echoing to everyone here would double-deliver to clients that
+  // didn't ask. A no-op (nothing sent) before any status has ever arrived —
+  // same "nothing to replay yet" behavior as replayPayload/connection-time.
+  //
+  // `client` here is vite's WRAPPED per-client channel (what a *custom*
+  // event listener — anything not in vite's wsServerEvents allowlist, which
+  // "gsx:status-request" isn't — receives), NOT the raw WebSocket socket
+  // index.ts's `ws.on("connection", ...)` gets ("connection" IS in that
+  // allowlist). The two shapes are NOT interchangeable:
+  //   - raw socket (connection handler): `.send(string)` writes that exact
+  //     string as the wire frame — replayPayload()'s pre-stringified JSON is
+  //     the correct argument there.
+  //   - wrapped client (here): `.send` is overloaded — `.send(payload:
+  //     HotPayload)` (a full `{type,event,data}` object) OR `.send(event:
+  //     string, data?)` (vite builds the `{type:"custom",event,data}`
+  //     envelope for you). Passing a *string* hits the second overload as
+  //     the event NAME, not a raw frame — `client.send(replayPayload())`
+  //     silently shipped `{type:"custom",event:"<the whole JSON blob>"}` and
+  //     the browser's `hot.on("gsx:status")` never fired. Use the two-arg
+  //     event+data form with the actual status object (not the
+  //     pre-stringified replayPayload()).
+  handleStatusRequest(client: { send(event: string, data?: unknown): void }): void {
+    if (this.currentStatus === null) return;
+    client.send("gsx:status", this.currentStatus);
+  }
+
   cmdMiddleware(req: any, res: any): void {
     // Respawn-verification handshake for gsx dev: echo the token when one is
     // configured (so its verify only matches ITS OWN vite), else the plain

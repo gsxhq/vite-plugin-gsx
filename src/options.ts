@@ -20,9 +20,11 @@ export interface GsxOptions {
   /**
    * Dev panel (Cmd/Ctrl-D status overlay). `false` disables it entirely;
    * `{ key }` keeps it enabled but rebinds the toggle to Cmd/Ctrl-<key>.
-   * Default: enabled, key "d".
+   * `{ autoShow }` sets the delay (ms) before the panel auto-shows itself
+   * during a still-running build cycle; `false` disables auto-show (Cmd-D
+   * still works). Default: enabled, key "d", autoShow 3000.
    */
-  devPanel?: boolean | { key?: string };
+  devPanel?: boolean | { key?: string; autoShow?: number | false };
   /**
    * Backend log file served read-only at /__gsx/log (for the dev panel).
    * Default: `process.env.GSX_DEV_LOG` — the absolute path `gsx dev`
@@ -49,18 +51,33 @@ export interface ResolvedOptions {
 export interface DevPanelSetting {
   enabled: boolean;
   key: string;
+  /** Delay (ms) before the panel auto-shows during a still-running cycle; `false` disables auto-show. */
+  autoShow: number | false;
 }
 
 const DEFAULT_GSX_GLOB = "**/*.gsx";
 const DEFAULT_DEVPANEL_KEY = "d";
 const VALID_DEVPANEL_KEY = /^[a-z0-9]$/;
+const DEFAULT_AUTO_SHOW_MS = 3000;
+
+// Same validate-or-default-silently rationale as the key: no logger reaches
+// this pure resolver, and a bad literal is a coding mistake caught by
+// review/tests, not a runtime condition users hit.
+function resolveAutoShow(user: number | false | undefined): number | false {
+  if (user === false) return false;
+  if (user === undefined) return DEFAULT_AUTO_SHOW_MS;
+  return Number.isFinite(user) && user >= 0 ? user : DEFAULT_AUTO_SHOW_MS;
+}
 
 // Resolves the devPanel setting on its own (rather than folding it only into
 // resolveOptions) because panelPlugin needs it at gsx()-factory time, before
 // a Vite `root` (and thus resolveOptions' other inputs) is known — see the
 // gsx() factory in index.ts.
 export function resolveDevPanel(user: GsxOptions["devPanel"]): DevPanelSetting {
-  if (user === false) return { enabled: false, key: DEFAULT_DEVPANEL_KEY };
+  // A disabled panel has nothing to auto-show either — pin autoShow to
+  // `false` rather than the numeric default so a disabled setting reads
+  // unambiguously as "off" end to end.
+  if (user === false) return { enabled: false, key: DEFAULT_DEVPANEL_KEY, autoShow: false };
   const requested = user === true || user === undefined ? undefined : user.key;
   const lowered = requested?.toLowerCase();
   // An invalid key (anything but a single a-z/0-9 character) falls back to
@@ -69,7 +86,9 @@ export function resolveDevPanel(user: GsxOptions["devPanel"]): DevPanelSetting {
   // for this would be a disproportionate restructure). A bad literal is a
   // coding mistake caught by review/tests, not a runtime condition users hit.
   const key = lowered !== undefined && VALID_DEVPANEL_KEY.test(lowered) ? lowered : DEFAULT_DEVPANEL_KEY;
-  return { enabled: true, key };
+  const requestedAutoShow = user === true || user === undefined ? undefined : user.autoShow;
+  const autoShow = resolveAutoShow(requestedAutoShow);
+  return { enabled: true, key, autoShow };
 }
 
 export function resolveOptions(user: GsxOptions, root: string): ResolvedOptions {
