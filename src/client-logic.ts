@@ -170,3 +170,33 @@ export function onToggleKey(state: PanelState): { state: PanelState; actions: Pa
   const actions: PanelActions = state.timerActive ? { cancelTimer: true } : {};
   return { state: { visible: true, openedBy: "user", timerActive: false }, actions };
 }
+
+// ---------------------------------------------------------------------------
+// Log box: an expanded layout with a scrolling tail of /__gsx/log, gated on a
+// one-time probe result and the current phase/visibility.
+
+export type LogProbeResult = "unknown" | "available" | "unavailable";
+
+export interface LogBoxState {
+  /** Render the wider layout with the log tail box. */
+  expanded: boolean;
+  /** Actively poll /__gsx/log right now. */
+  polling: boolean;
+}
+
+export function logBoxState(
+  probeResult: LogProbeResult,
+  phase: string | undefined,
+  visible: boolean,
+): LogBoxState {
+  const building = phase === "building" || phase === "starting";
+  const expanded = probeResult === "available" && building;
+  return { expanded, polling: expanded && visible };
+}
+
+// Non-null only when the server reported truncation via x-gsx-log-start > 0.
+export function logTruncationBanner(startOffset: number | null | undefined): string | null {
+  return typeof startOffset === "number" && Number.isFinite(startOffset) && startOffset > 0
+    ? "earlier output truncated"
+    : null;
+}

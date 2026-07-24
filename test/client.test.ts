@@ -1,14 +1,46 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 // client.ts's DOM surface is small (createElement/attachShadow/appendChild,
-// window.addEventListener) — minimal fakes stand in for jsdom, which this
-// package doesn't otherwise depend on.
-class FakeShadowRoot {
-  innerHTML = "";
-  getElementById(): null {
-    return null;
+// window.addEventListener, plus scrollable log-box elements) — minimal fakes
+// stand in for jsdom, which this package doesn't otherwise depend on.
+//
+// FakeShadowRoot's innerHTML setter mimics a real DOM's node teardown/rebuild
+// on assignment: every `id="..."` in the new markup gets a *fresh*
+// FakeElement, discarding whatever scroll state the old one had. This is
+// exactly the property client.ts's scroll-pin logic has to work around
+// (`lastScrollTop`/`userScrolled`), so the fake needs to reproduce it rather
+// than paper over it.
+class FakeElement {
+  scrollTop = 0;
+  scrollHeight = 500;
+  clientHeight = 100;
+  private listeners: Record<string, Array<(e: any) => void>> = {};
+  addEventListener(type: string, cb: (e: any) => void) {
+    (this.listeners[type] ??= []).push(cb);
+  }
+  dispatch(type: string, ev: any = {}) {
+    for (const cb of this.listeners[type] ?? []) cb(ev);
   }
 }
+
+class FakeShadowRoot {
+  html = "";
+  private elements: Record<string, FakeElement> = {};
+  get innerHTML() {
+    return this.html;
+  }
+  set innerHTML(value: string) {
+    this.html = value;
+    const ids = [...value.matchAll(/id="([^"]+)"/g)].map((m) => m[1]!);
+    const next: Record<string, FakeElement> = {};
+    for (const id of ids) next[id] = new FakeElement();
+    this.elements = next;
+  }
+  getElementById(id: string): FakeElement | null {
+    return this.elements[id] ?? null;
+  }
+}
+
 class FakeHost {
   style: Record<string, string> = {};
   shadow = new FakeShadowRoot();
@@ -53,10 +85,14 @@ function makeHot() {
   return { handlers, send, on };
 }
 
-// The module holds an idempotence guard (`initialized`) at module scope, so
-// each test that wires a fresh init() needs a fresh module instance —
-// vitest's normal per-file module cache would otherwise make every init()
-// after the first a silent no-op.
+function fakeLogResponse(ok: boolean, body = "", startHeader: string | null = "0") {
+  return {
+    ok,
+    text: async () => body,
+    headers: { get: (h: string) => (h === "x-gsx-log-start" ? startHeader : null) },
+  };
+}
+
 async function loadClient() {
   vi.resetModules();
   return import("../src/client.js");
@@ -66,6 +102,7 @@ afterEach(() => {
   delete (globalThis as any).document;
   delete (globalThis as any).window;
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("init", () => {
@@ -235,5 +272,208 @@ describe("phase-line ticking", () => {
 
     await vi.advanceTimersByTimeAsync(5000);
     expect(host.shadow.innerHTML).toBe(htmlAfterIdle);
+  });
+});
+
+describe("log box", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T12:00:00Z"));
+  });
+
+  it("STRICT: an idle, hidden page makes zero /__gsx/log requests", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("makes zero requests while hidden even mid-build", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", autoShow: false, hot } as any);
+
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("makes zero requests while visible but idle", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("probes once on the first visible+non-idle moment, expands, and polls ~1s", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "hello world\n", "0"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/__gsx/log");
+    expect(host.shadow.innerHTML).toContain("hello world");
+    expect(host.shadow.innerHTML).toContain('class="panel expanded"');
+    expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("a 404 probe never shows a box and is never retried", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(false));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(host.shadow.innerHTML).not.toContain('id="gsx-log-box"');
+
+    await vi.advanceTimersByTimeAsync(10000);
+    // No retries, ever — still exactly the one probe attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a network failure on probe degrades the same as a 404 — no box, no throw", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(host.shadow.innerHTML).not.toContain('id="gsx-log-box"');
+  });
+
+  it("shows a truncation banner when x-gsx-log-start > 0, not when it's 0", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "tail only", "128"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.shadow.innerHTML).toContain("earlier output truncated");
+  });
+
+  it("box is removed and polling stops once the phase leaves building/starting", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "log body", "0"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.shadow.innerHTML).toContain('class="panel expanded"');
+    expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
+
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    expect(host.shadow.innerHTML).not.toContain('id="gsx-log-box"');
+
+    fetchMock.mockClear();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pins the log box to the bottom by default", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "content", "0"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const el = host.shadow.getElementById("gsx-log-box")!;
+    expect(el.scrollTop).toBe(el.scrollHeight);
+  });
+
+  it("stays at the user's scroll position across polls once they scroll up, and resets on reopen", async () => {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "content", "0"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // User scrolls away from the bottom.
+    const el1 = host.shadow.getElementById("gsx-log-box")!;
+    el1.scrollTop = 10;
+    el1.dispatch("scroll");
+
+    // Next poll re-renders (a fresh element, per the fake's innerHTML
+    // semantics) — it must NOT snap back to the bottom.
+    await vi.advanceTimersByTimeAsync(1000);
+    const el2 = host.shadow.getElementById("gsx-log-box")!;
+    expect(el2.scrollTop).toBe(10);
+    expect(el2.scrollTop).not.toBe(el2.scrollHeight);
+
+    // Close and reopen the panel: fresh read, pinned to bottom again.
+    press(keydownListeners);
+    expect(host.style.display).toBe("none");
+    press(keydownListeners);
+    const el3 = host.shadow.getElementById("gsx-log-box")!;
+    expect(el3.scrollTop).toBe(el3.scrollHeight);
   });
 });

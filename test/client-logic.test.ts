@@ -12,6 +12,8 @@ import {
   onTimerFired,
   onToggleKey,
   type PanelState,
+  logBoxState,
+  logTruncationBanner,
 } from "../src/client-logic.js";
 
 const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
@@ -264,5 +266,40 @@ describe("panel open-state machine", () => {
     const { state: idleState, actions: idleActions } = onStatus(initialPanelState, "idle", null);
     expect(idleState).toEqual(initialPanelState);
     expect(idleActions).toEqual({});
+  });
+});
+
+describe("logBoxState", () => {
+  it("never shows or polls without a successful probe", () => {
+    expect(logBoxState("unknown", "building", true)).toEqual({ expanded: false, polling: false });
+    expect(logBoxState("unavailable", "building", true)).toEqual({ expanded: false, polling: false });
+  });
+  it("expands and polls while building/starting, probed available, and visible", () => {
+    expect(logBoxState("available", "building", true)).toEqual({ expanded: true, polling: true });
+    expect(logBoxState("available", "starting", true)).toEqual({ expanded: true, polling: true });
+  });
+  it("does not expand outside building/starting (e.g. generating, idle)", () => {
+    expect(logBoxState("available", "generating", true)).toEqual({ expanded: false, polling: false });
+    expect(logBoxState("available", "idle", true)).toEqual({ expanded: false, polling: false });
+  });
+  it("idle makes zero polling requests even if probed available", () => {
+    expect(logBoxState("available", "idle", true).polling).toBe(false);
+  });
+  it("hidden makes zero polling requests even mid-build with a successful probe", () => {
+    const { polling } = logBoxState("available", "building", false);
+    expect(polling).toBe(false);
+  });
+});
+
+describe("logTruncationBanner", () => {
+  it("no banner at offset 0 (untruncated)", () => {
+    expect(logTruncationBanner(0)).toBeNull();
+  });
+  it("banner when the offset is positive (truncated)", () => {
+    expect(logTruncationBanner(42)).toBe("earlier output truncated");
+  });
+  it("no banner when the offset is absent", () => {
+    expect(logTruncationBanner(undefined)).toBeNull();
+    expect(logTruncationBanner(null)).toBeNull();
   });
 });
