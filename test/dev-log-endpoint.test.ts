@@ -4,27 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gsx } from "../src/index.js";
 
-// Same minimal fake server as event-endpoint.test.ts.
+// Same minimal fake server as event-endpoint.test.ts. `server.allowedHosts:
+// true` opts these unit tests out of the in-handler host check (that check
+// has its own real-vite integration coverage in test/host-check.test.ts) so
+// each test here can focus on its own concern (bytesRead, tail parsing,
+// UTF-8 boundary, path hygiene) without also having to fabricate Host
+// headers.
 function fakeServer() {
   const handlers: Record<string, Function> = {};
   return {
     config: {
       root: process.cwd(),
       logger: { error: vi.fn(), info: vi.fn() },
+      server: { allowedHosts: true },
     },
     middlewares: { use: (path: string, fn: Function) => (handlers[path] = fn) },
     ws: { send: vi.fn(), on: vi.fn() },
     httpServer: { on: () => {} },
     handlers,
   };
-}
-
-// /__gsx/log is registered from configureServer's returned post-hook (see
-// src/index.ts), not synchronously — mirrors how vite itself drives plugins:
-// invoke the returned function once configureServer has run.
-function configure(plugin: any, server: any) {
-  const postHook = plugin.configureServer(server);
-  if (typeof postHook === "function") postHook();
 }
 
 function get(handler: Function, url = "/") {
@@ -48,14 +46,14 @@ describe("/__gsx/log", () => {
   it("is absent without GSX_DEV_LOG or the devLog option", () => {
     delete process.env.GSX_DEV_LOG;
     const s = fakeServer();
-    configure(gsx()[0] as any, s);
+    (gsx()[0] as any).configureServer(s);
     expect(s.handlers["/__gsx/log"]).toBeUndefined();
   });
 
   it("is absent with devLog: false even when the env var is set", () => {
     process.env.GSX_DEV_LOG = "/tmp/whatever.log";
     const s = fakeServer();
-    configure(gsx({ devLog: false })[0] as any, s);
+    (gsx({ devLog: false })[0] as any).configureServer(s);
     expect(s.handlers["/__gsx/log"]).toBeUndefined();
   });
 
@@ -65,7 +63,7 @@ describe("/__gsx/log", () => {
     writeFileSync(logPath, "hello backend\nline two\n");
     process.env.GSX_DEV_LOG = logPath;
     const s = fakeServer();
-    configure(gsx()[0] as any, s);
+    (gsx()[0] as any).configureServer(s);
     const h = s.handlers["/__gsx/log"]!;
 
     const full = await get(h);
@@ -99,7 +97,7 @@ describe("/__gsx/log", () => {
     process.env.GSX_DEV_LOG = "/nonexistent/env.log";
     const s = fakeServer();
     s.config.root = dir;
-    configure(gsx({ devLog: "custom.log" })[0] as any, s);
+    (gsx({ devLog: "custom.log" })[0] as any).configureServer(s);
     const { res } = await get(s.handlers["/__gsx/log"]!);
     expect(res.statusCode).toBe(200);
     expect(res.end.mock.calls[0][0].toString()).toBe("custom");
@@ -140,7 +138,7 @@ describe("/__gsx/log", () => {
 
     try {
       const s = fakeServer();
-      configure(gsx()[0] as any, s);
+      (gsx()[0] as any).configureServer(s);
       const h = s.handlers["/__gsx/log"]!;
 
       const { res, headers } = await get(h);
@@ -186,7 +184,7 @@ describe("/__gsx/log", () => {
 
     try {
       const s = fakeServer();
-      configure(gsx()[0] as any, s);
+      (gsx()[0] as any).configureServer(s);
       const h = s.handlers["/__gsx/log"]!;
 
       const { res, headers } = await get(h, "/?tail=5");
@@ -210,7 +208,7 @@ describe("/__gsx/log", () => {
     process.env.GSX_DEV_LOG = logPath;
     try {
       const s = fakeServer();
-      configure(gsx()[0] as any, s);
+      (gsx()[0] as any).configureServer(s);
       const h = s.handlers["/__gsx/log"]!;
 
       // Fractional: floor-after-check used to let this through as tail=0.
@@ -242,7 +240,7 @@ describe("/__gsx/log", () => {
     process.env.GSX_DEV_LOG = logPath;
     try {
       const s = fakeServer();
-      configure(gsx()[0] as any, s);
+      (gsx()[0] as any).configureServer(s);
       const h = s.handlers["/__gsx/log"]!;
 
       // Byte layout: h(1) c3(1) a9(1) l l o -> 6 bytes total.
@@ -262,7 +260,7 @@ describe("/__gsx/log", () => {
   it('devLog: "" is disabled, not an EISDIR 500 from resolving to the root directory', () => {
     delete process.env.GSX_DEV_LOG;
     const s = fakeServer();
-    configure(gsx({ devLog: "" })[0] as any, s);
+    (gsx({ devLog: "" })[0] as any).configureServer(s);
     expect(s.handlers["/__gsx/log"]).toBeUndefined();
   });
 });
