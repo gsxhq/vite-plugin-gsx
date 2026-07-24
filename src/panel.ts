@@ -47,6 +47,18 @@ export class PanelChannel {
     return JSON.stringify({ type: "custom", event: "gsx:status", data: this.currentStatus });
   }
 
+  // Answers a panel's `gsx:status-request` pull (sent right after it
+  // registers its `gsx:status` listener — see client.ts init()). Targeted at
+  // the requesting client rather than broadcast: the connection-time replay
+  // in index.ts's `ws.on("connection", ...)` already covers every client
+  // once, so echoing to everyone here would double-deliver to clients that
+  // didn't ask. A no-op (nothing sent) before any status has ever arrived —
+  // same "nothing to replay yet" behavior as replayPayload/connection-time.
+  handleStatusRequest(client: { send(payload: string): void }): void {
+    const replay = this.replayPayload();
+    if (replay) client.send(replay);
+  }
+
   cmdMiddleware(req: any, res: any): void {
     // Respawn-verification handshake for gsx dev: echo the token when one is
     // configured (so its verify only matches ITS OWN vite), else the plain

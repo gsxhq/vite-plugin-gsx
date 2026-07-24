@@ -232,3 +232,51 @@ describe("/__gsx/event", () => {
     expect(clientSent.some((m) => JSON.parse(m).type === "error")).toBe(false);
   });
 });
+
+describe("gsx:status-request", () => {
+  // Fixes a real race: vite's HMR client drops custom events that arrive
+  // before a listener is registered, and the panel's own `gsx:status`
+  // listener registration races the ws handshake during module load. This
+  // pull (sent by the panel right after it registers its listener) targets
+  // only the requesting client, complementing (not replacing) the
+  // connection-time replay covered above.
+  it("replies to the requesting client with the cached status, not a broadcast", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+
+    // Cache a status the same way gsx dev would: through /__gsx/event.
+    await call(s.handlers["/__gsx/event"]!, {
+      event: "status",
+      phase: "building",
+      server: { healthy: true, port: "7777" },
+      frontDoor: { state: "up", restarts: 0 },
+    });
+    s.sent.length = 0;
+
+    const clientSent: any[] = [];
+    const client = { send: (msg: any) => clientSent.push(msg) };
+    expect(s.wsHandlers["gsx:status-request"]).toBeTypeOf("function");
+    s.wsHandlers["gsx:status-request"]!({}, client);
+
+    expect(clientSent.length).toBe(1);
+    const parsed = JSON.parse(clientSent[0]);
+    expect(parsed).toEqual({
+      type: "custom",
+      event: "gsx:status",
+      data: { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } },
+    });
+    // Targeted, not broadcast: server.ws.send (the broadcast channel) saw nothing new.
+    expect(s.sent).toEqual([]);
+  });
+
+  it("is a no-op before any status has ever arrived (no crash, nothing sent)", () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+
+    const clientSent: any[] = [];
+    s.wsHandlers["gsx:status-request"]!({}, { send: (msg: any) => clientSent.push(msg) });
+    expect(clientSent).toEqual([]);
+  });
+});

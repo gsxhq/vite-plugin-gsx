@@ -160,3 +160,26 @@ describe("status", () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe("handleStatusRequest", () => {
+  const status = { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } };
+
+  it("sends the cached status to the requesting client only (not a broadcast)", () => {
+    chan.applyStatus(status);
+    const received: string[] = [];
+    const client = { send: (p: string) => received.push(p) };
+    chan.handleStatusRequest(client);
+    expect(received).toEqual([JSON.stringify({ type: "custom", event: "gsx:status", data: status })]);
+    // Only the targeted client got it — the broadcast spy from `chan`'s
+    // constructor (pushed into `sent`) only has the original applyStatus
+    // broadcast, not a second one from this pull.
+    expect(sent).toEqual([{ type: "custom", event: "gsx:status", data: status }]);
+  });
+
+  it("is a no-op (nothing sent, no crash) before any status has ever arrived", () => {
+    const received: string[] = [];
+    const client = { send: (p: string) => received.push(p) };
+    chan.handleStatusRequest(client);
+    expect(received).toEqual([]);
+  });
+});

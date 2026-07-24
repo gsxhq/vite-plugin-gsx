@@ -180,6 +180,16 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       const panel = new PanelChannel(logger, (p) => server.ws.send(p as any), process.env.GSX_DEV_TOKEN);
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
+      // A pull complementing the connection-time replay below: vite's HMR
+      // client drops custom events that arrive before a listener is
+      // registered, and the panel's own `gsx:status` listener registration
+      // races the ws handshake during module load. A panel that loses that
+      // race sends this right after binding its listener (see client.ts
+      // init()) to fetch the cached status directly — targeted at just that
+      // client, not broadcast. The connection-time replay stays (older
+      // panels that predate this pull still rely on it); a client receiving
+      // both is harmless, it just re-renders the same status twice.
+      server.ws.on("gsx:status-request", (_data: unknown, client: any) => panel.handleStatusRequest(client));
 
       // Backend log tail — /__gsx/log (dev panel's "read the log" source).
       // The path arrives on the dev env bus (GSX_DEV_LOG, injected by gsx dev

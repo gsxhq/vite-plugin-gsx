@@ -243,6 +243,13 @@ export function init(opts: InitOptions): void {
     applyActions(actions);
     sync();
   });
+  // Pull the cached status directly, right after the listener above is
+  // registered: vite's HMR client drops custom events that arrive before a
+  // listener exists, and that registration itself races the ws connection
+  // handshake during module load (the plugin's connection-time replay can
+  // lose that race). A reply here is idempotent with that replay — a client
+  // that gets both just re-renders the same status twice.
+  hot.send("gsx:status-request", {});
 
   window.addEventListener("keydown", (e) => {
     if (!isToggleKey(e, isEditable(e.target), opts.key)) return;

@@ -76,13 +76,20 @@ function press(keydownListeners: Array<(e: any) => void>, key = "d") {
   }
 }
 
+// Records call order (both .on registrations and .send calls) so the
+// status-request-after-listener-registration ordering can be pinned exactly,
+// not just "both happened".
 function makeHot() {
   const handlers: Record<string, (data: any) => void> = {};
-  const send = vi.fn();
+  const calls: Array<{ type: "on" | "send"; event: string }> = [];
+  const send = vi.fn((event: string, _data?: any) => {
+    calls.push({ type: "send", event });
+  });
   const on = vi.fn((event: string, cb: (data: any) => void) => {
     handlers[event] = cb;
+    calls.push({ type: "on", event });
   });
-  return { handlers, send, on };
+  return { handlers, calls, send, on };
 }
 
 function fakeLogResponse(ok: boolean, body = "", startHeader: string | null = "0") {
@@ -117,6 +124,22 @@ describe("init", () => {
     expect(bodyChildren.length).toBe(1);
     expect(keydownListeners.length).toBe(1);
     expect(hot.on).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("gsx:status-request pull (race-free init)", () => {
+  it("registers the gsx:status listener before pulling the cached status", async () => {
+    installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+
+    init({ key: "d", hot } as any);
+
+    const onIndex = hot.calls.findIndex((c) => c.type === "on" && c.event === "gsx:status");
+    const sendIndex = hot.calls.findIndex((c) => c.type === "send" && c.event === "gsx:status-request");
+    expect(onIndex).toBeGreaterThanOrEqual(0);
+    expect(sendIndex).toBeGreaterThan(onIndex);
+    expect(hot.send).toHaveBeenCalledWith("gsx:status-request", {});
   });
 });
 
