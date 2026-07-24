@@ -13,7 +13,7 @@ describe("resolveOptions", () => {
     expect(r.reloadEndpoint).toBe("/__reload");
     expect(r.debounce).toBe(50);
     expect(r.generateOnStart).toBe(true);
-    expect(r.devPanel).toEqual({ enabled: true, key: "d" });
+    expect(r.devPanel).toEqual({ enabled: true, key: "d", autoShow: 3000 });
   });
 
   it("normalizes a string watch into an array", () => {
@@ -45,35 +45,53 @@ describe("resolveOptions", () => {
 });
 
 describe("resolveDevPanel", () => {
-  it("defaults to enabled, key 'd'", () => {
-    expect(resolveDevPanel(undefined)).toEqual({ enabled: true, key: "d" });
+  it("defaults to enabled, key 'd', autoShow 3000", () => {
+    expect(resolveDevPanel(undefined)).toEqual({ enabled: true, key: "d", autoShow: 3000 });
   });
 
   it("true is equivalent to the default", () => {
-    expect(resolveDevPanel(true)).toEqual({ enabled: true, key: "d" });
+    expect(resolveDevPanel(true)).toEqual({ enabled: true, key: "d", autoShow: 3000 });
   });
 
-  it("false disables the panel", () => {
-    expect(resolveDevPanel(false)).toEqual({ enabled: false, key: "d" });
+  it("false disables the panel (and autoShow with it)", () => {
+    expect(resolveDevPanel(false)).toEqual({ enabled: false, key: "d", autoShow: false });
   });
 
   it("{ key } enables with a custom key", () => {
-    expect(resolveDevPanel({ key: "k" })).toEqual({ enabled: true, key: "k" });
+    expect(resolveDevPanel({ key: "k" })).toEqual({ enabled: true, key: "k", autoShow: 3000 });
   });
 
   it("lowercases the key", () => {
-    expect(resolveDevPanel({ key: "K" })).toEqual({ enabled: true, key: "k" });
+    expect(resolveDevPanel({ key: "K" })).toEqual({ enabled: true, key: "k", autoShow: 3000 });
   });
 
   it("{} with no key falls back to the default key", () => {
-    expect(resolveDevPanel({})).toEqual({ enabled: true, key: "d" });
+    expect(resolveDevPanel({})).toEqual({ enabled: true, key: "d", autoShow: 3000 });
   });
 
   it("an invalid key (not a single a-z/0-9 char) falls back to 'd' silently", () => {
-    expect(resolveDevPanel({ key: "shift" })).toEqual({ enabled: true, key: "d" });
-    expect(resolveDevPanel({ key: "" })).toEqual({ enabled: true, key: "d" });
-    expect(resolveDevPanel({ key: "!" })).toEqual({ enabled: true, key: "d" });
-    expect(resolveDevPanel({ key: "-" })).toEqual({ enabled: true, key: "d" });
+    expect(resolveDevPanel({ key: "shift" })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+    expect(resolveDevPanel({ key: "" })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+    expect(resolveDevPanel({ key: "!" })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+    expect(resolveDevPanel({ key: "-" })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+  });
+
+  it("honors a custom autoShow delay", () => {
+    expect(resolveDevPanel({ autoShow: 5000 })).toEqual({ enabled: true, key: "d", autoShow: 5000 });
+  });
+
+  it("autoShow: false disables auto-show while the panel stays enabled", () => {
+    expect(resolveDevPanel({ autoShow: false })).toEqual({ enabled: true, key: "d", autoShow: false });
+  });
+
+  it("autoShow: 0 is honored (not treated as falsy/absent)", () => {
+    expect(resolveDevPanel({ autoShow: 0 })).toEqual({ enabled: true, key: "d", autoShow: 0 });
+  });
+
+  it("an invalid autoShow (negative, NaN, non-finite) falls back to the default silently", () => {
+    expect(resolveDevPanel({ autoShow: -1 })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+    expect(resolveDevPanel({ autoShow: NaN })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
+    expect(resolveDevPanel({ autoShow: Infinity })).toEqual({ enabled: true, key: "d", autoShow: 3000 });
   });
 });
 
@@ -82,10 +100,17 @@ describe("resolveOptions devPanel plumbing", () => {
     expect(resolveOptions({ devPanel: false }, "/proj").devPanel).toEqual({
       enabled: false,
       key: "d",
+      autoShow: false,
     });
     expect(resolveOptions({ devPanel: { key: "K" } }, "/proj").devPanel).toEqual({
       enabled: true,
       key: "k",
+      autoShow: 3000,
+    });
+    expect(resolveOptions({ devPanel: { autoShow: 5000 } }, "/proj").devPanel).toEqual({
+      enabled: true,
+      key: "d",
+      autoShow: 5000,
     });
   });
 });

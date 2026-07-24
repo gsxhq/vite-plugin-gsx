@@ -51,7 +51,7 @@ describe("virtual:gsx-devpanel (serve, panel enabled)", () => {
     // to sit inside the served root, as it does here) and calls init() with
     // the resolved key — it does not inline the panel code itself.
     expect(result!.code).toMatch(/from "[^"]*\/client\.js"/);
-    expect(result!.code).toContain(`init({ key: "d" })`);
+    expect(result!.code).toContain(`init({ key: "d", autoShow: 3000 })`);
   });
 
   it("custom key: the wrapper passes it through to init()", async () => {
@@ -66,7 +66,22 @@ describe("virtual:gsx-devpanel (serve, panel enabled)", () => {
 
     const result = await server.transformRequest("virtual:gsx-devpanel");
     expect(result).not.toBeNull();
-    expect(result!.code).toContain(`init({ key: "k" })`);
+    expect(result!.code).toContain(`init({ key: "k", autoShow: 3000 })`);
+  });
+
+  it("custom autoShow: the wrapper passes it through to init()", async () => {
+    const builtGsx = await loadBuiltGsx();
+    server = await createServer({
+      root: process.cwd(),
+      logLevel: "silent",
+      server: { port: 0 },
+      plugins: builtGsx({ devPanel: { autoShow: false }, generateOnStart: false }),
+    });
+    await server.listen();
+
+    const result = await server.transformRequest("virtual:gsx-devpanel");
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(`init({ key: "d", autoShow: false })`);
   });
 
   it("the imported client module itself still gets a real HMR context", async () => {

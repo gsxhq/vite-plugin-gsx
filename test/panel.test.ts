@@ -160,3 +160,44 @@ describe("status", () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe("handleStatusRequest", () => {
+  const status = { event: "status", phase: "building", server: { healthy: true, port: "7777" }, frontDoor: { state: "up", restarts: 0 } };
+
+  // Faithful to vite's real per-client channel (see getSocketClient in
+  // vite's ws server): `.send` is the two-overload
+  // `NormalizedHotChannelClient` contract, NOT a raw-string-writes-the-frame
+  // socket. A fake that just records whatever string it was handed (as this
+  // test previously did) can't distinguish a correct `.send("gsx:status",
+  // data)` call from the bug it was meant to catch —
+  // `.send(JSON.stringify(...))`, which vite's real client would treat as
+  // event NAME "the whole JSON blob", not a frame — so it record the (event,
+  // data) pair the same way vite's real wrapped client would build the wire
+  // envelope from them, and assert on that envelope shape.
+  function fakeWrappedClient() {
+    const received: Array<{ type: "custom"; event: string; data: unknown }> = [];
+    return {
+      received,
+      send: (event: string, data?: unknown) => {
+        received.push({ type: "custom", event, data });
+      },
+    };
+  }
+
+  it("sends the cached status to the requesting client only (not a broadcast)", () => {
+    chan.applyStatus(status);
+    const client = fakeWrappedClient();
+    chan.handleStatusRequest(client);
+    expect(client.received).toEqual([{ type: "custom", event: "gsx:status", data: status }]);
+    // Only the targeted client got it — the broadcast spy from `chan`'s
+    // constructor (pushed into `sent`) only has the original applyStatus
+    // broadcast, not a second one from this pull.
+    expect(sent).toEqual([{ type: "custom", event: "gsx:status", data: status }]);
+  });
+
+  it("is a no-op (nothing sent, no crash) before any status has ever arrived", () => {
+    const client = fakeWrappedClient();
+    chan.handleStatusRequest(client);
+    expect(client.received).toEqual([]);
+  });
+});
