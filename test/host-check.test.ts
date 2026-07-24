@@ -100,4 +100,67 @@ describe("/__gsx/log against a real vite dev server", () => {
     });
     expect(crossOrigin.headers["access-control-allow-origin"]).toBeUndefined();
   });
+
+  it("an https dev server bypasses the host check entirely, mirroring vite's own install gate", async () => {
+    // Vite only `.use()`'s hostCheckMiddleware when
+    // `allowedHosts !== true && !serverConfig.https` (DNS rebinding is a
+    // plain-http attack — a rebound hostname can't present a certificate the
+    // browser will accept for it) — so a faithful port must skip its own
+    // check under https too, or it's *stricter* than vite: a false 403 on
+    // /__gsx/log while vite itself serves everything else unchecked.
+    dir = mkdtempSync(join(tmpdir(), "gsx-hostcheck-https-"));
+    const logPath = join(dir, "dev.log");
+    writeFileSync(logPath, "https-log-content");
+
+    viteServer = await createServer({
+      root: dir,
+      logLevel: "silent",
+      // `https: {}` is enough to make `serverConfig.https` truthy and
+      // exercise the real config-resolution path; middlewareMode never
+      // actually binds a TLS listener (resolveHttpServer is skipped
+      // entirely), so no cert/key is needed. `allowedHosts` is left at its
+      // default (`[]`, not `true`) — without the https bypass this request
+      // would 403.
+      server: { middlewareMode: true, hmr: false, https: {} },
+      plugins: [gsx({ devLog: logPath })],
+    });
+
+    http = createHttp(viteServer.middlewares);
+    await new Promise<void>((r) => http!.listen(0, r));
+    const port = (http.address() as { port: number }).port;
+
+    const res = await rawRequest(port, "/__gsx/log", { Host: "custom-host.example" });
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("https-log-content");
+  });
+
+  it("admits a Host that matches ONLY via vite's own additionalAllowedHosts (server.origin), not via localhost/IP/allowedHosts", async () => {
+    // Canary for the internal-field dependency: `additionalAllowedHosts` is
+    // an internal ResolvedConfig field (not in vite's public types) that
+    // src/index.ts reads directly rather than re-deriving. The previous
+    // canary's allowed-Host case passed via the `localhost` rule alone, so
+    // it would stay green even if a future vite renamed/removed this field —
+    // host-configured users (server.origin/hmr.host) would silently start
+    // getting 403s with no test noticing. This test is admitted ONLY through
+    // that field: "origin-host.example" is neither localhost, an IP literal,
+    // nor in `server.allowedHosts` (left at its default `[]`).
+    dir = mkdtempSync(join(tmpdir(), "gsx-hostcheck-origin-"));
+    const logPath = join(dir, "dev.log");
+    writeFileSync(logPath, "origin-log-content");
+
+    viteServer = await createServer({
+      root: dir,
+      logLevel: "silent",
+      server: { middlewareMode: true, hmr: false, origin: "http://origin-host.example:1234" },
+      plugins: [gsx({ devLog: logPath })],
+    });
+
+    http = createHttp(viteServer.middlewares);
+    await new Promise<void>((r) => http!.listen(0, r));
+    const port = (http.address() as { port: number }).port;
+
+    const res = await rawRequest(port, "/__gsx/log", { Host: "origin-host.example" });
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("origin-log-content");
+  });
 });

@@ -37,6 +37,15 @@ function additionalAllowedHosts(server: ViteDevServer): string[] {
 function isHostAllowedForDevLog(server: ViteDevServer, hostHeader: string | undefined): boolean {
   const allowedHosts = server.config.server.allowedHosts;
   if (allowedHosts === true) return true;
+  // Mirrors vite's own install gate for hostCheckMiddleware — it's only
+  // `.use()`'d when `allowedHosts !== true && !serverConfig.https`
+  // (dep-Dm0c1Wj2.js:38826): DNS rebinding is a plain-http attack (a rebound
+  // hostname can't present a certificate the browser will accept for it), so
+  // vite skips the check entirely under https. Checking unconditionally here
+  // would be *stricter* than vite — a false 403 on /__gsx/log for an https
+  // dev server with a custom hostname, while vite itself serves everything
+  // else. A faithful port has to include the gate, not just the predicate.
+  if (server.config.server.https) return true;
   if (!hostHeader) return false;
   if (FILE_OR_EXTENSION_PROTOCOL_RE.test(hostHeader)) return true;
   const trimmedHost = hostHeader.trim();
