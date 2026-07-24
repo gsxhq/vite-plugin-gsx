@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { isToggleKey, isEditable, renderStatus, buttonsDisabled } from "../src/client-logic.js";
+import {
+  isToggleKey,
+  isEditable,
+  renderStatus,
+  buttonsDisabled,
+  autoShowDelay,
+  DEFAULT_AUTO_SHOW_MS,
+  phaseLine,
+  initialPanelState,
+  onStatus,
+  onTimerFired,
+  onToggleKey,
+  type PanelState,
+} from "../src/client-logic.js";
 
 const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
   key: "d", metaKey: false, ctrlKey: false, altKey: false, ...over,
@@ -96,5 +109,160 @@ describe("buttonsDisabled", () => {
   });
   it("enabled once status has arrived and nothing is inflight", () => {
     expect(buttonsDisabled({ phase: "idle" }, false)).toBe(false);
+  });
+});
+
+describe("autoShowDelay", () => {
+  it("defaults to 3000ms when autoShow is absent", () => {
+    expect(autoShowDelay({})).toBe(DEFAULT_AUTO_SHOW_MS);
+  });
+  it("false disables auto-show (null)", () => {
+    expect(autoShowDelay({ autoShow: false })).toBeNull();
+  });
+  it("honors a valid non-negative number, including 0", () => {
+    expect(autoShowDelay({ autoShow: 5000 })).toBe(5000);
+    expect(autoShowDelay({ autoShow: 0 })).toBe(0);
+  });
+  it("falls back to the default for negative, NaN, or non-finite values", () => {
+    expect(autoShowDelay({ autoShow: -1 })).toBe(DEFAULT_AUTO_SHOW_MS);
+    expect(autoShowDelay({ autoShow: NaN })).toBe(DEFAULT_AUTO_SHOW_MS);
+    expect(autoShowDelay({ autoShow: Infinity })).toBe(DEFAULT_AUTO_SHOW_MS);
+  });
+});
+
+describe("phaseLine", () => {
+  const now = Date.parse("2026-07-24T12:00:42Z");
+  it("full line: phase + elapsed + last cycle", () => {
+    const status = {
+      phase: "building",
+      phaseSince: "2026-07-24T12:00:00Z",
+      lastCycle: { durationMs: 130000 },
+    };
+    expect(phaseLine(status, now)).toBe("building… started 42s ago · last cycle 2m10s");
+  });
+  it("omits the elapsed segment when phaseSince is absent (old gsx dev)", () => {
+    const status = { phase: "building", lastCycle: { durationMs: 130000 } };
+    expect(phaseLine(status, now)).toBe("building… · last cycle 2m10s");
+  });
+  it("omits the last-cycle segment when lastCycle/durationMs is absent", () => {
+    const status = { phase: "building", phaseSince: "2026-07-24T12:00:00Z" };
+    expect(phaseLine(status, now)).toBe("building… started 42s ago");
+  });
+  it("bare phase when both are absent (old gsx dev, first cycle)", () => {
+    expect(phaseLine({ phase: "building" }, now)).toBe("building…");
+  });
+  it("never renders undefined/NaN for a malformed phaseSince", () => {
+    const status = { phase: "building", phaseSince: "not-a-date" };
+    const line = phaseLine(status, now);
+    expect(line).not.toContain("undefined");
+    expect(line).not.toContain("NaN");
+    expect(line).toBe("building…");
+  });
+  it("never renders undefined/NaN for a non-numeric durationMs", () => {
+    const status = { phase: "building", lastCycle: { durationMs: "oops" } };
+    const line = phaseLine(status, now);
+    expect(line).not.toContain("undefined");
+    expect(line).not.toContain("NaN");
+    expect(line).toBe("building…");
+  });
+  it("humanizes durations under a minute as plain seconds", () => {
+    const status = { phase: "generating", phaseSince: "2026-07-24T12:00:41Z" };
+    expect(phaseLine(status, now)).toBe("generating… started 1s ago");
+  });
+  it("ticks: a later nowMs advances the elapsed segment", () => {
+    const status = { phase: "building", phaseSince: "2026-07-24T12:00:00Z" };
+    expect(phaseLine(status, now + 1000)).toBe("building… started 43s ago");
+  });
+  it("empty string when status/phase is absent", () => {
+    expect(phaseLine(null, now)).toBe("");
+    expect(phaseLine({}, now)).toBe("");
+  });
+});
+
+describe("panel open-state machine", () => {
+  it("a non-idle status starts the auto-show timer from rest", () => {
+    const { state, actions } = onStatus(initialPanelState, "generating", 3000);
+    expect(state).toEqual({ visible: false, openedBy: null, timerActive: true });
+    expect(actions).toEqual({ startTimer: true });
+  });
+
+  it("a later non-idle phase transition does not restart an already-running timer", () => {
+    const timing: PanelState = { visible: false, openedBy: null, timerActive: true };
+    const { state, actions } = onStatus(timing, "building", 3000);
+    expect(state).toEqual(timing);
+    expect(actions).toEqual({});
+  });
+
+  it("idle before expiry cancels the pending timer", () => {
+    const timing: PanelState = { visible: false, openedBy: null, timerActive: true };
+    const { state, actions } = onStatus(timing, "idle", 3000);
+    expect(state).toEqual({ visible: false, openedBy: null, timerActive: false });
+    expect(actions).toEqual({ cancelTimer: true });
+  });
+
+  it("timer expiry while still non-idle auto-opens the panel", () => {
+    const timing: PanelState = { visible: false, openedBy: null, timerActive: true };
+    expect(onTimerFired(timing)).toEqual({ visible: true, openedBy: "auto", timerActive: false });
+  });
+
+  it("a stale timer firing after cancellation is a no-op", () => {
+    const cancelled: PanelState = { visible: false, openedBy: null, timerActive: false };
+    expect(onTimerFired(cancelled)).toBe(cancelled);
+  });
+
+  it("idle auto-closes an auto-opened panel", () => {
+    const autoOpen: PanelState = { visible: true, openedBy: "auto", timerActive: false };
+    const { state, actions } = onStatus(autoOpen, "idle", 3000);
+    expect(state).toEqual({ visible: false, openedBy: null, timerActive: false });
+    expect(actions).toEqual({});
+  });
+
+  it("idle does NOT close a manually-opened panel", () => {
+    const userOpen: PanelState = { visible: true, openedBy: "user", timerActive: false };
+    const { state, actions } = onStatus(userOpen, "idle", 3000);
+    expect(state).toEqual(userOpen);
+    expect(actions).toEqual({});
+  });
+
+  it("a non-idle status while already visible does not (re)start a timer", () => {
+    const userOpen: PanelState = { visible: true, openedBy: "user", timerActive: false };
+    const { state, actions } = onStatus(userOpen, "building", 3000);
+    expect(state).toEqual(userOpen);
+    expect(actions).toEqual({});
+  });
+
+  it("Cmd-D opens as user-owned and cancels a pending auto-show timer", () => {
+    const timing: PanelState = { visible: false, openedBy: null, timerActive: true };
+    const { state, actions } = onToggleKey(timing);
+    expect(state).toEqual({ visible: true, openedBy: "user", timerActive: false });
+    expect(actions).toEqual({ cancelTimer: true });
+  });
+
+  it("Cmd-D opens as user-owned with no timer to cancel from rest", () => {
+    const { state, actions } = onToggleKey(initialPanelState);
+    expect(state).toEqual({ visible: true, openedBy: "user", timerActive: false });
+    expect(actions).toEqual({});
+  });
+
+  it("Cmd-D always closes an open panel, auto- or user-opened", () => {
+    const autoOpen: PanelState = { visible: true, openedBy: "auto", timerActive: false };
+    expect(onToggleKey(autoOpen)).toEqual({
+      state: { visible: false, openedBy: null, timerActive: false },
+      actions: {},
+    });
+    const userOpen: PanelState = { visible: true, openedBy: "user", timerActive: false };
+    expect(onToggleKey(userOpen)).toEqual({
+      state: { visible: false, openedBy: null, timerActive: false },
+      actions: {},
+    });
+  });
+
+  it("autoShow:false (autoShowMs null) disables the timer entirely regardless of phase", () => {
+    const { state, actions } = onStatus(initialPanelState, "building", null);
+    expect(state).toEqual(initialPanelState);
+    expect(actions).toEqual({});
+    const { state: idleState, actions: idleActions } = onStatus(initialPanelState, "idle", null);
+    expect(idleState).toEqual(initialPanelState);
+    expect(idleActions).toEqual({});
   });
 });

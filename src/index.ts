@@ -146,7 +146,7 @@ export function panelPlugin(
         // `/@fs/<path>` specifier is vite's own scheme for serving an
         // arbitrary absolute filesystem path, and the client module it
         // points at keeps a real import.meta.hot from vite's transform.
-        return `import { init } from "${fsImportSpecifier(resolvedClientPath)}";\ninit({ key: ${JSON.stringify(devPanel.key)} });\n`;
+        return `import { init } from "${fsImportSpecifier(resolvedClientPath)}";\ninit({ key: ${JSON.stringify(devPanel.key)}, autoShow: ${JSON.stringify(devPanel.autoShow)} });\n`;
       }
       return null;
     },
