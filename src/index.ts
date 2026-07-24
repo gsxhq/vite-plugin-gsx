@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, promises as fsp } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -122,6 +122,50 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       const panel = new PanelChannel(logger, (p) => server.ws.send(p as any), process.env.GSX_DEV_TOKEN);
       server.ws.on("gsx:cmd", (d: unknown) => panel.intake(d));
       server.middlewares.use("/__gsx/cmd", panel.cmdMiddleware);
+
+      // Backend log tail — /__gsx/log (dev panel's "read the log" source).
+      // The path arrives on the dev env bus (GSX_DEV_LOG, injected by gsx dev
+      // when [dev].log is set) or via the devLog option; endpoint absent when
+      // neither is set. GET-only, capped: the panel polls a bounded tail, it
+      // never streams the whole file.
+      if (opts.devLogPath) {
+        const logPath = opts.devLogPath;
+        const DEFAULT_TAIL = 64 << 10; // 64 KiB
+        const MAX_TAIL = 1 << 20; // 1 MiB
+        server.middlewares.use("/__gsx/log", async (req, res) => {
+          if (req.method !== "GET") {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          let tail = DEFAULT_TAIL;
+          const t = new URL(req.url ?? "/", "http://gsx").searchParams.get("tail");
+          if (t !== null) {
+            const n = Number(t);
+            if (Number.isFinite(n) && n > 0) tail = Math.min(Math.floor(n), MAX_TAIL);
+          }
+          try {
+            const fh = await fsp.open(logPath, "r");
+            try {
+              const { size } = await fh.stat();
+              const start = Math.max(0, size - tail);
+              const buf = Buffer.alloc(size - start);
+              await fh.read(buf, 0, buf.length, start);
+              res.statusCode = 200;
+              res.setHeader("content-type", "text/plain; charset=utf-8");
+              // Where in the file this tail begins — non-zero tells the
+              // panel the response is truncated mid-file.
+              res.setHeader("x-gsx-log-start", String(start));
+              res.end(buf);
+            } finally {
+              await fh.close();
+            }
+          } catch (err) {
+            res.statusCode = (err as NodeJS.ErrnoException)?.code === "ENOENT" ? 404 : 500;
+            res.end();
+          }
+        });
+      }
 
       // 1. /__reload endpoint — external trigger (the Go server after boot).
       server.middlewares.use(opts.reloadEndpoint, (req, res) => {
