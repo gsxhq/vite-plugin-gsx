@@ -296,7 +296,9 @@ either way — `gsx dev`'s front-door respawn verification depends on it.
 It also auto-shows itself once a cycle has been running for `autoShow`
 milliseconds (default 3000; set `false` to require Cmd-D), and when
 `gsx dev` is run with `[dev].log` configured it grows a log box that tails
-the backend's output for the duration of the build.
+the backend's output for the duration of the build. The log box renders ANSI
+color escape sequences from the backend's output, collapses `\r` progress
+lines to their final state, and strips terminal control sequences.
 
 ## Notes
 
