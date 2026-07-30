@@ -209,3 +209,43 @@ export function logTruncationBanner(startOffset: number | null | undefined): str
     ? "earlier output truncated"
     : null;
 }
+
+// ---------------------------------------------------------------------------
+// Log pre-pass. Two things ansi_up (verified against 6.0.6) does not do:
+// carriage-return overwrite, and OSC strings — which leak through as literal
+// text (`ESC]0;title BEL` renders as `]0;title`). Runs before ansi_to_html,
+// on raw log text.
+
+// OSC introducer through its terminator (BEL or ST), excluding OSC 8 —
+// ansi_up turns those into real anchors (http/https only, URL escaped), so
+// they are its business, not ours. Requiring the terminator means an
+// unterminated OSC at a truncated tail's end is left as-is rather than
+// swallowing the newest output.
+const OSC_RE = /\x1b\](?!8;)[\s\S]*?(?:\x07|\x1b\\)/g;
+const SGR_RE = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Strips OSC strings and applies carriage-return overwrite, so a `\r`-driven
+ * progress line collapses to its final state instead of stacking. SGR state
+ * persists across a `\r` in a real terminal, so sequences from the discarded
+ * prefix are re-prepended to the kept segment.
+ */
+export function normalizeLogText(text: string): string {
+  const stripped = text.replace(OSC_RE, "");
+  if (!stripped.includes("\r")) return stripped;
+  return stripped
+    .split("\n")
+    .map((line) => {
+      // A CRLF log ends every line with a \r that is NOT an overwrite — it is
+      // half the line ending, left over from splitting on \n. Ignore that one
+      // (and drop it, so a bare CR never reaches the DOM); an overwriting \r
+      // is one with content after it.
+      const crlf = line.endsWith("\r");
+      const body = crlf ? line.slice(0, -1) : line;
+      const cut = body.lastIndexOf("\r");
+      if (cut === -1) return body;
+      const carried = (body.slice(0, cut).match(SGR_RE) ?? []).join("");
+      return carried + body.slice(cut + 1);
+    })
+    .join("\n");
+}

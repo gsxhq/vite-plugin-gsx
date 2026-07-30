@@ -14,6 +14,7 @@ import {
   type PanelState,
   logBoxState,
   logTruncationBanner,
+  normalizeLogText,
 } from "../src/client-logic.js";
 
 const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
@@ -313,5 +314,63 @@ describe("logTruncationBanner", () => {
   it("no banner when the offset is absent", () => {
     expect(logTruncationBanner(undefined)).toBeNull();
     expect(logTruncationBanner(null)).toBeNull();
+  });
+});
+
+describe("normalizeLogText", () => {
+  it("leaves text with no carriage returns or OSC untouched", () => {
+    expect(normalizeLogText("plain\nlines\n")).toBe("plain\nlines\n");
+    expect(normalizeLogText("")).toBe("");
+  });
+
+  it("collapses a \\r-overwritten line to its final segment", () => {
+    expect(normalizeLogText("downloading 10%\rdownloading 99%\rdone\nnext\n")).toBe("done\nnext\n");
+  });
+
+  it("collapses each line independently", () => {
+    expect(normalizeLogText("a\rb\nc\rd\n")).toBe("b\nd\n");
+  });
+
+  it("re-prepends SGR sequences from the discarded prefix", () => {
+    // SGR state persists across \r in a real terminal, so the kept segment
+    // must stay green.
+    expect(normalizeLogText("\x1b[32m10%\r99% done")).toBe("\x1b[32m99% done");
+  });
+
+  it("re-prepends every SGR sequence from the prefix, in order", () => {
+    expect(normalizeLogText("\x1b[1m\x1b[31mx\ry")).toBe("\x1b[1m\x1b[31my");
+  });
+
+  it("does not re-prepend SGR from the kept segment's own prefix twice", () => {
+    expect(normalizeLogText("a\r\x1b[32mb")).toBe("\x1b[32mb");
+  });
+
+  it("keeps a trailing \\r\\n line ending intact", () => {
+    // CRLF: the \r immediately precedes the newline, so the "segment after
+    // the last \r" is empty and the line's content must not be dropped.
+    expect(normalizeLogText("hello\r\nworld\r\n")).toBe("hello\nworld\n");
+  });
+
+  it("strips a BEL-terminated OSC string", () => {
+    expect(normalizeLogText("a\x1b]0;my title\x07b")).toBe("ab");
+  });
+
+  it("strips an ST-terminated OSC string", () => {
+    expect(normalizeLogText("a\x1b]0;my title\x1b\\b")).toBe("ab");
+  });
+
+  it("preserves OSC 8 hyperlinks for ansi_up to handle", () => {
+    const link = "\x1b]8;;http://x\x07link\x1b]8;;\x07";
+    expect(normalizeLogText(link)).toBe(link);
+  });
+
+  it("does not let an unterminated OSC string eat the rest of the log", () => {
+    // A byte-sliced tail can end mid-OSC. Dropping everything after it would
+    // blank the newest output, which is the part the user is watching.
+    expect(normalizeLogText("keep me\x1b]0;never terminated")).toBe("keep me\x1b]0;never terminated");
+  });
+
+  it("leaves SGR sequences alone", () => {
+    expect(normalizeLogText("\x1b[31mred\x1b[0m\n")).toBe("\x1b[31mred\x1b[0m\n");
   });
 });
