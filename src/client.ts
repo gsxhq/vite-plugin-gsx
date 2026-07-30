@@ -122,6 +122,22 @@ export function init(opts: InitOptions): void {
         #gsx-log-box { max-height: 220px; overflow-y: auto; white-space: pre-wrap;
           background: #101013; border: 1px solid #3c3c44; border-radius: 6px;
           padding: 6px 8px; margin: 0 0 10px; font-size: 12px; }
+        .ansi-black-fg { color: #6b6b74 } .ansi-red-fg { color: #e05561 }
+        .ansi-green-fg { color: #8cc265 } .ansi-yellow-fg { color: #d5a336 }
+        .ansi-blue-fg { color: #6a9fd8 } .ansi-magenta-fg { color: #c162de }
+        .ansi-cyan-fg { color: #42b3c2 } .ansi-white-fg { color: #d7dae0 }
+        .ansi-bright-black-fg { color: #8b8b94 } .ansi-bright-red-fg { color: #ff616e }
+        .ansi-bright-green-fg { color: #a5e075 } .ansi-bright-yellow-fg { color: #f0c674 }
+        .ansi-bright-blue-fg { color: #8ab7f0 } .ansi-bright-magenta-fg { color: #de73ff }
+        .ansi-bright-cyan-fg { color: #4cd1e0 } .ansi-bright-white-fg { color: #f4f4f6 }
+        .ansi-black-bg { background: #2b2b31 } .ansi-red-bg { background: #6e2a30 }
+        .ansi-green-bg { background: #3d5a2c } .ansi-yellow-bg { background: #6a5320 }
+        .ansi-blue-bg { background: #2f4c6e } .ansi-magenta-bg { background: #5c2f6b }
+        .ansi-cyan-bg { background: #235b62 } .ansi-white-bg { background: #4a4a52 }
+        .ansi-bright-black-bg { background: #3c3c44 } .ansi-bright-red-bg { background: #8c3540 }
+        .ansi-bright-green-bg { background: #4e7238 } .ansi-bright-yellow-bg { background: #856828 }
+        .ansi-bright-blue-bg { background: #3c608a } .ansi-bright-magenta-bg { background: #743a86 }
+        .ansi-bright-cyan-bg { background: #2c737c } .ansi-bright-white-bg { background: #5e5e68 }
       </style>
       <div class="panel${box.expanded ? " expanded" : ""}">
         <h1>gsx dev</h1>

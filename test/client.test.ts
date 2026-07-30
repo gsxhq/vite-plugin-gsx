@@ -588,11 +588,23 @@ describe("log box ANSI rendering", () => {
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(host.shadow.innerHTML).toContain("ansi-red-fg");
+    expect(host.shadow.innerHTML).toContain('class="ansi-red-fg"');
 
     body = "plain";
     await vi.advanceTimersByTimeAsync(1000);
     expect(host.shadow.innerHTML).toContain("plain");
-    expect(host.shadow.innerHTML).not.toContain("ansi-red-fg");
+    expect(host.shadow.innerHTML).not.toContain('class="ansi-red-fg"');
+  });
+
+  it("ships styles for every ansi-* class it can emit", async () => {
+    const html = await renderWithLog("");
+    // One rule per class ansi_up can emit with use_classes, so no color
+    // renders as unstyled inherit-colored text.
+    for (const color of ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]) {
+      for (const variant of [color, `bright-${color}`]) {
+        expect(html).toContain(`.ansi-${variant}-fg`);
+        expect(html).toContain(`.ansi-${variant}-bg`);
+      }
+    }
   });
 });
