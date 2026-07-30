@@ -698,15 +698,44 @@ describe("log box controls", () => {
     expect(html()).toContain('id="log-max"');
   });
 
-  it("puts all five controls on one row, commands last", async () => {
+  it("gives the commands their own row, above the log's controls", async () => {
     const { html } = await openPanel();
-    const row = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(html())?.[1] ?? "";
-    const ids = [...row.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(["log-toggle", "log-wrap", "log-max", "rebuild", "restart"]);
+    const cmd = /<div class="cmdrow">([\s\S]*?)<\/div>/.exec(html())?.[1] ?? "";
+    const ctl = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(html())?.[1] ?? "";
+    expect([...cmd.matchAll(/id="([^"]+)"/g)].map((m) => m[1])).toEqual(["rebuild", "restart"]);
+    expect([...ctl.matchAll(/id="([^"]+)"/g)].map((m) => m[1])).toEqual(["log-toggle", "log-wrap"]);
+    expect(html().indexOf('class="cmdrow"')).toBeLessThan(html().indexOf('class="ctlrow"'));
   });
 
-  it("keeps Rebuild and Restart on the row when there is no log endpoint", async () => {
-    // The row is not the log's — it must not vanish with the log controls.
+  it("labels the wrap toggle 'wrap lines'", async () => {
+    const { html } = await openPanel();
+    expect(html()).toContain(">wrap lines</button>");
+  });
+
+  it("keeps maximise out of the row, in the panel corner", async () => {
+    const { html } = await openPanel();
+    const row = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(html())?.[1] ?? "";
+    expect(row).not.toContain("log-max");
+    expect(html()).toContain('id="log-max" class="iconbtn"');
+  });
+
+  it("shows a maximise icon when normal and a minimise icon when maximised", async () => {
+    const { html, click } = await openPanel();
+    // The two glyphs differ by their polylines: arrows out of the corners vs
+    // arrows into them.
+    expect(html()).toContain('points="15 3 21 3 21 9"');
+    expect(html()).not.toContain('points="4 14 10 14 10 20"');
+    expect(html()).toContain('aria-label="Maximise panel"');
+
+    await click("log-max");
+    expect(html()).toContain('points="4 14 10 14 10 20"');
+    expect(html()).not.toContain('points="15 3 21 3 21 9"');
+    expect(html()).toContain('aria-label="Restore panel"');
+  });
+
+  it("keeps the command row when there is no log endpoint at all", async () => {
+    // The commands are not the log's — its whole controls row disappears, but
+    // Rebuild/Restart must survive.
     vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
     installFakeStorage();
     const { bodyChildren, keydownListeners } = installFakeDom();
@@ -718,9 +747,10 @@ describe("log box controls", () => {
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(0);
 
-    const row = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(host.shadow.innerHTML)?.[1] ?? "";
-    const ids = [...row.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(["rebuild", "restart"]);
+    const cmd = /<div class="cmdrow">([\s\S]*?)<\/div>/.exec(host.shadow.innerHTML)?.[1] ?? "";
+    expect([...cmd.matchAll(/id="([^"]+)"/g)].map((m) => m[1])).toEqual(["rebuild", "restart"]);
+    expect(host.shadow.innerHTML).not.toContain('class="ctlrow"');
+    expect(host.shadow.innerHTML).not.toContain('id="log-max"');
   });
 
   it("renders no controls at all when the endpoint is unavailable", async () => {
@@ -795,7 +825,7 @@ describe("log box controls", () => {
 
     await click("log-max");
     expect(panelClass(html())).toBe("panel expanded maximised");
-    expect(html()).toContain('id="log-max" aria-pressed="true"');
+    expect(html()).toContain('id="log-max" class="iconbtn" aria-pressed="true"');
   });
 
   it("maximising a collapsed box expands it", async () => {

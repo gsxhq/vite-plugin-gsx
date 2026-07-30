@@ -58,6 +58,20 @@ const TICK_MS = 1000;
 // away from the tail" rather than merely not-pixel-perfectly-at-the-bottom.
 const SCROLL_PIN_SLACK_PX = 4;
 
+// Corner maximise/restore glyphs: arrows out of, and into, the corners.
+// Stroked with currentColor so they inherit the panel's foreground, and
+// inlined because dist/client.js must stay a self-contained browser module —
+// no icon font, no sprite fetch.
+const ICON_SVG_OPEN =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
+const ICON_MAXIMISE =
+  `${ICON_SVG_OPEN}<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>` +
+  '<line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+const ICON_MINIMISE =
+  `${ICON_SVG_OPEN}<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>` +
+  '<line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+
 // Both storage helpers swallow everything localStorage can throw — it is
 // absent in some embedding contexts and throws outright under a blocked-
 // cookies policy or a full quota. The panel's toggles are a convenience;
@@ -144,7 +158,7 @@ export function init(opts: InitOptions): void {
           border: 1px solid #3c3c44; border-radius: 8px; padding: 12px 16px; min-width: 260px;
           box-shadow: 0 4px 24px rgba(0,0,0,.4); }
         .panel.expanded { width: 480px; }
-        h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+        h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; padding-right: 28px; }
         .phaseline { margin: 0 0 8px; opacity: .85; }
         dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 10px; }
         dt { opacity: .6 } dd { margin: 0 }
@@ -157,9 +171,18 @@ export function init(opts: InitOptions): void {
           background: #101013; border: 1px solid #3c3c44; border-radius: 6px;
           padding: 6px 8px; margin: 0; font-size: 12px; }
         #gsx-log-box.nowrap { white-space: pre; overflow-x: auto; }
-        /* One row of every control: log disclosure, wrap, max, then the two
-           commands. Wraps rather than overflowing when the panel is narrow. */
-        .ctlrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
+        /* Maximise/restore sits in the panel's own top-right corner, clear of
+           the control row. The h1 reserves room for it via padding-right so a
+           long heading can never slide underneath. */
+        .iconbtn { position: absolute; top: 8px; right: 8px; margin: 0;
+          padding: 3px; line-height: 0; border-radius: 4px; }
+        .iconbtn[aria-pressed="true"] { background: #3c3c44; border-color: #5e5e68; }
+        /* Two rows, each wrapping rather than overflowing a narrow panel: the
+           commands, then the log's own controls directly above its box. */
+        .cmdrow, .ctlrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .cmdrow { margin: 0 0 4px; }
+        .ctlrow { margin: 0 0 6px; }
+        .cmdrow button { margin-right: 0; }
         .ctlrow button { margin-right: 0; padding: 2px 8px; font-size: 12px; }
         .ctlrow button[aria-pressed="true"] { background: #3c3c44; border-color: #5e5e68; }
         /* Maximised: drop the corner anchoring and become a full-viewport
@@ -190,19 +213,29 @@ export function init(opts: InitOptions): void {
         <h1>gsx dev</h1>
         ${line ? `<p class="phaseline">${escapeHtml(line)}</p>` : ""}
         ${renderStatus(status)}
-        <div class="ctlrow">
-          ${
-            box.present
-              ? `<button id="log-toggle" aria-expanded="${!logControls.collapsed}">${
-                  logControls.collapsed ? "▸" : "▾"
-                } log</button>
-            <button id="log-wrap" aria-pressed="${logControls.wrap}">wrap</button>
-            <button id="log-max" aria-pressed="${logControls.maximised}">max</button>`
-              : ""
-          }
+        ${
+          box.present
+            ? `<button id="log-max" class="iconbtn" aria-pressed="${logControls.maximised}" title="${
+                logControls.maximised ? "Restore panel" : "Maximise panel"
+              }" aria-label="${logControls.maximised ? "Restore panel" : "Maximise panel"}">${
+                logControls.maximised ? ICON_MINIMISE : ICON_MAXIMISE
+              }</button>`
+            : ""
+        }
+        <div class="cmdrow">
           <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
           <button id="restart" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Restart server</button>
         </div>
+        ${
+          box.present
+            ? `<div class="ctlrow">
+            <button id="log-toggle" aria-expanded="${!logControls.collapsed}">${
+              logControls.collapsed ? "▸" : "▾"
+            } log</button>
+            <button id="log-wrap" aria-pressed="${logControls.wrap}">wrap lines</button>
+          </div>`
+            : ""
+        }
         ${
           box.expanded
             ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box"${
