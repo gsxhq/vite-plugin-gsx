@@ -181,13 +181,78 @@ export function onToggleKey(state: PanelState): { state: PanelState; actions: Pa
 }
 
 // ---------------------------------------------------------------------------
-// Log box: an expanded layout with a scrolling tail of /__gsx/log, gated on a
-// one-time probe result and the current phase/visibility.
+// Log box: a scrolling tail of /__gsx/log, available in every phase once the
+// one-time probe succeeds, and driven from there by the user's own controls.
 
 export type LogProbeResult = "unknown" | "available" | "unavailable";
 
+/** The three user-owned toggles, persisted across reloads. */
+export interface LogControls {
+  collapsed: boolean;
+  wrap: boolean;
+  maximised: boolean;
+}
+
+export const defaultLogControls: LogControls = { collapsed: false, wrap: true, maximised: false };
+
+/** localStorage key holding the serialized LogControls. */
+export const LOG_CONTROLS_KEY = "gsx-devpanel-log";
+
+export type LogControlAction = "toggle-collapsed" | "toggle-wrap" | "toggle-maximised" | "exit-maximised";
+
+/**
+ * The single place the controls' one invariant lives: maximised and collapsed
+ * are mutually exclusive, since a full-viewport panel showing no log would be
+ * a dead end the user has to click twice to escape. Whichever toggle the user
+ * just pressed wins, and the other bit yields.
+ */
+export function applyLogControl(controls: LogControls, action: LogControlAction): LogControls {
+  switch (action) {
+    case "toggle-wrap":
+      return { ...controls, wrap: !controls.wrap };
+    case "toggle-collapsed": {
+      const collapsed = !controls.collapsed;
+      return { ...controls, collapsed, maximised: collapsed ? false : controls.maximised };
+    }
+    case "toggle-maximised": {
+      const maximised = !controls.maximised;
+      return { ...controls, maximised, collapsed: maximised ? false : controls.collapsed };
+    }
+    case "exit-maximised":
+      return { ...controls, maximised: false };
+  }
+}
+
+export function serializeLogControls(controls: LogControls): string {
+  return JSON.stringify(controls);
+}
+
+/**
+ * Reads controls back defensively: an absent, malformed, wrong-shaped, or
+ * hand-edited key degrades to the defaults field by field rather than
+ * breaking the panel, and the maximised/collapsed invariant is re-applied on
+ * the way in so no stored pair can resurrect the unreachable state.
+ */
+export function parseLogControls(raw: string | null | undefined): LogControls {
+  if (typeof raw !== "string" || raw === "") return defaultLogControls;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return defaultLogControls;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return defaultLogControls;
+  const bag = parsed as Record<string, unknown>;
+  const bool = (key: keyof LogControls) =>
+    typeof bag[key] === "boolean" ? (bag[key] as boolean) : defaultLogControls[key];
+  const collapsed = bool("collapsed");
+  return { collapsed, wrap: bool("wrap"), maximised: collapsed ? false : bool("maximised") };
+}
+
 export interface LogBoxState {
-  /** Render the wider layout with the log tail box. */
+  /** Render the controls row — the box exists, whatever the toggles say. */
+  present: boolean;
+  /** Render the log tail itself, and widen the panel to fit it. */
   expanded: boolean;
   /** Actively poll /__gsx/log right now. */
   polling: boolean;
@@ -195,12 +260,15 @@ export interface LogBoxState {
 
 export function logBoxState(
   probeResult: LogProbeResult,
-  phase: string | undefined,
   visible: boolean,
+  controls: LogControls,
 ): LogBoxState {
-  const building = phase === "building" || phase === "starting";
-  const expanded = probeResult === "available" && building;
-  return { expanded, polling: expanded && visible };
+  const present = probeResult === "available" && visible;
+  const expanded = present && !controls.collapsed;
+  // Polling follows the tail the user can actually see: collapsing is a real
+  // off switch, and no phase can turn the fetch loop back on behind their
+  // back.
+  return { present, expanded, polling: expanded };
 }
 
 // Non-null only when the server reported truncation via x-gsx-log-start > 0.

@@ -15,6 +15,10 @@ import {
   logBoxState,
   logTruncationBanner,
   normalizeLogText,
+  defaultLogControls,
+  applyLogControl,
+  parseLogControls,
+  serializeLogControls,
 } from "../src/client-logic.js";
 
 const key = (over: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
@@ -283,24 +287,118 @@ describe("panel open-state machine", () => {
 });
 
 describe("logBoxState", () => {
+  const open = defaultLogControls;
+  const shut = { ...defaultLogControls, collapsed: true };
+
   it("never shows or polls without a successful probe", () => {
-    expect(logBoxState("unknown", "building", true)).toEqual({ expanded: false, polling: false });
-    expect(logBoxState("unavailable", "building", true)).toEqual({ expanded: false, polling: false });
+    expect(logBoxState("unknown", true, open)).toEqual({ present: false, expanded: false, polling: false });
+    expect(logBoxState("unavailable", true, open)).toEqual({ present: false, expanded: false, polling: false });
   });
-  it("expands and polls while building/starting, probed available, and visible", () => {
-    expect(logBoxState("available", "building", true)).toEqual({ expanded: true, polling: true });
-    expect(logBoxState("available", "starting", true)).toEqual({ expanded: true, polling: true });
+  it("is present, expanded and polling once probed available and visible", () => {
+    expect(logBoxState("available", true, open)).toEqual({ present: true, expanded: true, polling: true });
   });
-  it("does not expand outside building/starting (e.g. generating, idle)", () => {
-    expect(logBoxState("available", "generating", true)).toEqual({ expanded: false, polling: false });
-    expect(logBoxState("available", "idle", true)).toEqual({ expanded: false, polling: false });
+  it("stays available in every phase — the phase no longer gates the box", () => {
+    // The whole point of the always-available box: an idle page shows the log
+    // just as a building one does. `phase` is not an input any more.
+    expect(logBoxState("available", true, open).expanded).toBe(true);
   });
-  it("idle makes zero polling requests even if probed available", () => {
-    expect(logBoxState("available", "idle", true).polling).toBe(false);
+  it("collapsed keeps the controls row present but stops polling", () => {
+    expect(logBoxState("available", true, shut)).toEqual({ present: true, expanded: false, polling: false });
   });
-  it("hidden makes zero polling requests even mid-build with a successful probe", () => {
-    const { polling } = logBoxState("available", "building", false);
-    expect(polling).toBe(false);
+  it("hidden shows nothing and polls nothing, however the controls are set", () => {
+    expect(logBoxState("available", false, open)).toEqual({ present: false, expanded: false, polling: false });
+    expect(logBoxState("available", false, shut)).toEqual({ present: false, expanded: false, polling: false });
+  });
+});
+
+describe("applyLogControl", () => {
+  it("toggles wrap without touching the other two", () => {
+    expect(applyLogControl(defaultLogControls, "toggle-wrap")).toEqual({
+      collapsed: false, wrap: false, maximised: false,
+    });
+  });
+  it("toggles collapsed", () => {
+    const shut = applyLogControl(defaultLogControls, "toggle-collapsed");
+    expect(shut.collapsed).toBe(true);
+    expect(applyLogControl(shut, "toggle-collapsed").collapsed).toBe(false);
+  });
+  it("maximising expands a collapsed box — maximised+collapsed is unreachable", () => {
+    const shut = { ...defaultLogControls, collapsed: true };
+    expect(applyLogControl(shut, "toggle-maximised")).toEqual({
+      collapsed: false, wrap: true, maximised: true,
+    });
+  });
+  it("collapsing a maximised box drops out of maximised", () => {
+    const big = { ...defaultLogControls, maximised: true };
+    expect(applyLogControl(big, "toggle-collapsed")).toEqual({
+      collapsed: true, wrap: true, maximised: false,
+    });
+  });
+  it("exit-maximised clears maximised and is a no-op when not maximised", () => {
+    const big = { ...defaultLogControls, maximised: true };
+    expect(applyLogControl(big, "exit-maximised").maximised).toBe(false);
+    expect(applyLogControl(defaultLogControls, "exit-maximised")).toEqual(defaultLogControls);
+  });
+  it("preserves wrap across collapse and maximise toggles", () => {
+    const noWrap = { ...defaultLogControls, wrap: false };
+    expect(applyLogControl(noWrap, "toggle-collapsed").wrap).toBe(false);
+    expect(applyLogControl(noWrap, "toggle-maximised").wrap).toBe(false);
+  });
+  it("returns a new object rather than mutating its input", () => {
+    const before = { ...defaultLogControls };
+    applyLogControl(before, "toggle-collapsed");
+    expect(before).toEqual(defaultLogControls);
+  });
+});
+
+describe("parseLogControls / serializeLogControls", () => {
+  it("round-trips every reachable field combination", () => {
+    // collapsed+maximised is excluded on purpose: applyLogControl cannot
+    // produce it and parseLogControls normalizes it away, so it is not a
+    // round-trippable state.
+    for (const collapsed of [false, true]) {
+      for (const wrap of [false, true]) {
+        for (const maximised of collapsed ? [false] : [false, true]) {
+          const c = { collapsed, wrap, maximised };
+          expect(parseLogControls(serializeLogControls(c))).toEqual(c);
+        }
+      }
+    }
+  });
+  it("defaults to an expanded, wrapping, unmaximised box", () => {
+    expect(defaultLogControls).toEqual({ collapsed: false, wrap: true, maximised: false });
+  });
+  it("falls back to defaults when nothing is stored", () => {
+    expect(parseLogControls(null)).toEqual(defaultLogControls);
+    expect(parseLogControls(undefined)).toEqual(defaultLogControls);
+    expect(parseLogControls("")).toEqual(defaultLogControls);
+  });
+  it("falls back to defaults on malformed JSON", () => {
+    expect(parseLogControls("{not json")).toEqual(defaultLogControls);
+  });
+  it("falls back to defaults on JSON of the wrong shape", () => {
+    // A stale key written by a different version must never break the panel.
+    expect(parseLogControls("null")).toEqual(defaultLogControls);
+    expect(parseLogControls("42")).toEqual(defaultLogControls);
+    expect(parseLogControls('"nope"')).toEqual(defaultLogControls);
+    expect(parseLogControls("[]")).toEqual(defaultLogControls);
+  });
+  it("ignores non-boolean fields field-by-field, keeping the valid ones", () => {
+    expect(parseLogControls('{"collapsed":true,"wrap":"yes","maximised":null}')).toEqual({
+      collapsed: true, wrap: true, maximised: false,
+    });
+  });
+  it("ignores unknown keys", () => {
+    expect(parseLogControls('{"collapsed":true,"somethingElse":9}')).toEqual({
+      collapsed: true, wrap: true, maximised: false,
+    });
+  });
+  it("never persists a maximised+collapsed pair back out", () => {
+    // Belt-and-braces on the invariant applyLogControl maintains: even a
+    // hand-edited key cannot resurrect the unreachable state.
+    expect(parseLogControls('{"collapsed":true,"maximised":true}')).toEqual({
+      collapsed: true, wrap: true, maximised: false,
+    });
   });
 });
 

@@ -76,6 +76,26 @@ function press(keydownListeners: Array<(e: any) => void>, key = "d") {
   }
 }
 
+// A bare keypress with no modifiers — Esc, unlike the Cmd/Ctrl panel toggle.
+function pressPlain(keydownListeners: Array<(e: any) => void>, key: string, target: unknown = null) {
+  for (const cb of keydownListeners) {
+    cb({ key, metaKey: false, ctrlKey: false, altKey: false, target, preventDefault: () => {} });
+  }
+}
+
+// In-memory localStorage stand-in: the panel persists its log-box controls
+// there, and the node test environment has no real one.
+function installFakeStorage(seed: Record<string, string> = {}) {
+  const store = new Map(Object.entries(seed));
+  const fake = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+  };
+  (globalThis as any).localStorage = fake;
+  return { store };
+}
+
 // Records call order (both .on registrations and .send calls) so the
 // status-request-after-listener-registration ordering can be pinned exactly,
 // not just "both happened".
@@ -108,6 +128,7 @@ async function loadClient() {
 afterEach(() => {
   delete (globalThis as any).document;
   delete (globalThis as any).window;
+  delete (globalThis as any).localStorage;
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -332,15 +353,41 @@ describe("log box", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("makes zero requests while visible but idle", async () => {
-    const fetchMock = vi.fn();
+  it("shows the log while visible and idle — the phase no longer gates it", async () => {
+    // Was "makes zero requests while visible but idle": the box used to exist
+    // only during building/starting. It is now available in every phase, so a
+    // visible+idle panel probes, renders the box, and polls.
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "idle log\n", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { keydownListeners } = installFakeDom();
+    const { bodyChildren, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
 
     press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledWith("/__gsx/log");
+    expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
+    expect(host.shadow.innerHTML).toContain("idle log");
+
+    const callsSoFar = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsSoFar);
+  });
+
+  it("makes zero requests while hidden and idle", async () => {
+    // The hidden-page guarantee survives the phase gate's removal: nothing is
+    // requested until the panel is actually opened.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", autoShow: false, hot } as any);
+
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(10000);
 
@@ -427,7 +474,10 @@ describe("log box", () => {
     expect(host.shadow.innerHTML).toContain("earlier output truncated");
   });
 
-  it("box is removed and polling stops once the phase leaves building/starting", async () => {
+  it("keeps the box and keeps polling when the phase leaves building/starting", async () => {
+    // Inverts the old "box is removed and polling stops once the phase leaves
+    // building/starting" pin. A build finishing is exactly when you want to
+    // read what it said, so the box now survives the transition to idle.
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "log body", "0"));
     vi.stubGlobal("fetch", fetchMock);
     const { bodyChildren, keydownListeners } = installFakeDom();
@@ -439,15 +489,14 @@ describe("log box", () => {
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(host.shadow.innerHTML).toContain('class="panel expanded"');
     expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
 
     hot.handlers["gsx:status"]!({ phase: "idle" });
-    expect(host.shadow.innerHTML).not.toContain('id="gsx-log-box"');
+    expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
 
     fetchMock.mockClear();
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("pins the log box to the bottom by default", async () => {
@@ -606,5 +655,222 @@ describe("log box ANSI rendering", () => {
         expect(html).toContain(`.ansi-${variant}-bg`);
       }
     }
+  });
+});
+
+describe("log box controls", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T12:00:00Z"));
+  });
+
+  // Opens the panel with the log endpoint available and returns everything a
+  // control test needs: the host to read markup from, the shadow root to
+  // click buttons in, the keydown listeners, the fetch spy, and the storage.
+  async function openPanel(seed: Record<string, string> = {}) {
+    const fetchMock = vi.fn(async () => fakeLogResponse(true, "line one\nline two\n", "0"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { store } = installFakeStorage(seed);
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+    const click = async (id: string) => {
+      host.shadow.getElementById(id)!.dispatch("click");
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    return { host, hot, keydownListeners, fetchMock, store, click, html: () => host.shadow.innerHTML };
+  }
+
+  // The stylesheet itself contains `.panel.maximised`, so a bare
+  // toContain("maximised") is always true — assert on the panel's class
+  // attribute instead.
+  const panelClass = (html: string) => /<div class="(panel[^"]*)"/.exec(html)?.[1] ?? "";
+
+  it("renders all three controls whenever the log endpoint is available", async () => {
+    const { html } = await openPanel();
+    expect(html()).toContain('id="log-toggle"');
+    expect(html()).toContain('id="log-wrap"');
+    expect(html()).toContain('id="log-max"');
+  });
+
+  it("renders no controls at all when the endpoint is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
+    installFakeStorage();
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.shadow.innerHTML).not.toContain('id="log-toggle"');
+    expect(host.shadow.innerHTML).not.toContain('id="gsx-log-box"');
+  });
+
+  it("collapsing hides the tail, keeps the controls, and STOPS polling", async () => {
+    const { html, click, fetchMock } = await openPanel();
+    expect(html()).toContain('id="gsx-log-box"');
+
+    await click("log-toggle");
+    expect(html()).toContain('id="log-toggle"');
+    expect(html()).not.toContain('id="gsx-log-box"');
+    expect(html()).toContain('aria-expanded="false"');
+
+    fetchMock.mockClear();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("re-expanding fetches immediately rather than waiting for the next tick", async () => {
+    const { click, fetchMock } = await openPanel();
+    await click("log-toggle");
+    fetchMock.mockClear();
+
+    await click("log-toggle");
+    expect(fetchMock).toHaveBeenCalledWith("/__gsx/log");
+  });
+
+  it("a build starting does not re-expand a collapsed box or restart polling", async () => {
+    // Collapse is the user's decision and outranks any phase change: a build
+    // must not silently restart a 1s fetch loop they switched off.
+    const { html, click, fetchMock, hot } = await openPanel();
+    await click("log-toggle");
+    expect(html()).not.toContain('id="gsx-log-box"');
+    fetchMock.mockClear();
+
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(html()).not.toContain('id="gsx-log-box"');
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The panel still tells you a build is running, just in its phase line.
+    expect(html()).toContain("building");
+  });
+
+  it("wrap toggles the nowrap class and its aria-pressed state", async () => {
+    const { html, click } = await openPanel();
+    expect(html()).toContain('id="log-wrap" aria-pressed="true"');
+    expect(html()).not.toContain('class="nowrap"');
+
+    await click("log-wrap");
+    expect(html()).toContain('id="log-wrap" aria-pressed="false"');
+    expect(html()).toContain('class="nowrap"');
+  });
+
+  it("maximise adds the maximised class to the panel", async () => {
+    const { html, click } = await openPanel();
+    expect(panelClass(html())).toBe("panel expanded");
+
+    await click("log-max");
+    expect(panelClass(html())).toBe("panel expanded maximised");
+    expect(html()).toContain('id="log-max" aria-pressed="true"');
+  });
+
+  it("maximising a collapsed box expands it", async () => {
+    const { html, click } = await openPanel({ "gsx-devpanel-log": '{"collapsed":true}' });
+    expect(html()).not.toContain('id="gsx-log-box"');
+
+    await click("log-max");
+    expect(html()).toContain('id="gsx-log-box"');
+    expect(panelClass(html())).toBe("panel expanded maximised");
+  });
+
+  it("Esc exits maximised without closing the panel", async () => {
+    const { html, click, keydownListeners, host } = await openPanel();
+    await click("log-max");
+    expect(panelClass(html())).toContain("maximised");
+
+    pressPlain(keydownListeners, "Escape");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(panelClass(html())).toBe("panel expanded");
+    expect(host.style.display).not.toBe("none");
+    expect(html()).toContain('id="gsx-log-box"');
+  });
+
+  it("Esc does nothing when not maximised", async () => {
+    const { html, keydownListeners, host } = await openPanel();
+    pressPlain(keydownListeners, "Escape");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.style.display).not.toBe("none");
+    expect(html()).toContain('id="gsx-log-box"');
+  });
+
+  it("Esc is ignored while typing in an editable element", async () => {
+    const { html, click, keydownListeners } = await openPanel();
+    await click("log-max");
+
+    pressPlain(keydownListeners, "Escape", { tagName: "INPUT" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(panelClass(html())).toContain("maximised");
+  });
+
+  it("persists each toggle to localStorage", async () => {
+    const { click, store } = await openPanel();
+    await click("log-wrap");
+    expect(JSON.parse(store.get("gsx-devpanel-log")!)).toEqual({
+      collapsed: false, wrap: false, maximised: false,
+    });
+
+    await click("log-toggle");
+    expect(JSON.parse(store.get("gsx-devpanel-log")!)).toEqual({
+      collapsed: true, wrap: false, maximised: false,
+    });
+  });
+
+  it("restores persisted controls on load", async () => {
+    const { html } = await openPanel({
+      "gsx-devpanel-log": '{"collapsed":false,"wrap":false,"maximised":true}',
+    });
+    expect(panelClass(html())).toBe("panel expanded maximised");
+    expect(html()).toContain('class="nowrap"');
+    expect(html()).toContain('id="gsx-log-box"');
+  });
+
+  it("starts collapsed — and makes zero requests beyond the one probe — when persisted collapsed", async () => {
+    const { html, fetchMock } = await openPanel({ "gsx-devpanel-log": '{"collapsed":true}' });
+    expect(html()).toContain('id="log-toggle"');
+    expect(html()).not.toContain('id="gsx-log-box"');
+
+    // The single probe still happens: whether to show the controls row at all
+    // depends on its answer. Nothing beyond it.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives a localStorage that throws on read and on write", async () => {
+    (globalThis as any).localStorage = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(true, "log\n", "0")));
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Defaults, and a working panel.
+    expect(host.shadow.innerHTML).toContain('id="gsx-log-box"');
+    host.shadow.getElementById("log-wrap")!.dispatch("click");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.shadow.innerHTML).toContain('class="nowrap"');
   });
 });

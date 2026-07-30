@@ -19,7 +19,14 @@ import {
   logBoxState,
   logTruncationBanner,
   normalizeLogText,
+  applyLogControl,
+  parseLogControls,
+  serializeLogControls,
+  defaultLogControls,
+  LOG_CONTROLS_KEY,
   type LogProbeResult,
+  type LogControls,
+  type LogControlAction,
 } from "./client-logic.js";
 import { AnsiUp } from "ansi_up";
 // Type-only: erased at build time, so dist/client.js keeps no runtime
@@ -51,6 +58,26 @@ const TICK_MS = 1000;
 // away from the tail" rather than merely not-pixel-perfectly-at-the-bottom.
 const SCROLL_PIN_SLACK_PX = 4;
 
+// Both storage helpers swallow everything localStorage can throw — it is
+// absent in some embedding contexts and throws outright under a blocked-
+// cookies policy or a full quota. The panel's toggles are a convenience;
+// losing their persistence must never cost the panel itself.
+function readLogControls(): LogControls {
+  try {
+    return parseLogControls(globalThis.localStorage?.getItem(LOG_CONTROLS_KEY));
+  } catch {
+    return defaultLogControls;
+  }
+}
+
+function writeLogControls(controls: LogControls): void {
+  try {
+    globalThis.localStorage?.setItem(LOG_CONTROLS_KEY, serializeLogControls(controls));
+  } catch {
+    // Ignored: see readLogControls.
+  }
+}
+
 export function init(opts: InitOptions): void {
   if (initialized) return;
   initialized = true;
@@ -67,8 +94,8 @@ export function init(opts: InitOptions): void {
   let tickTimer: ReturnType<typeof setInterval> | null = null;
 
   // Log box: one probe per page load (never retried — a 404/failed probe
-  // degrades to no box, permanently, for the rest of this page's life),
-  // then ~1s polling strictly gated on visible+building/starting.
+  // degrades to no box, permanently, for the rest of this page's life), then
+  // ~1s polling for as long as the box is visible AND expanded.
   let logProbe: LogProbeResult = "unknown";
   let logProbeStarted = false;
   let logPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -77,6 +104,7 @@ export function init(opts: InitOptions): void {
   let userScrolled = false;
   let lastScrollTop = 0;
   let logBoxWasExpanded = false;
+  let logControls: LogControls = readLogControls();
 
   const host = document.createElement("gsx-devpanel");
   const root = host.attachShadow({ mode: "open" });
@@ -86,11 +114,11 @@ export function init(opts: InitOptions): void {
   const isVisible = () => host.style.display !== "none";
 
   const render = () => {
-    const box = logBoxState(logProbe, status?.phase, isVisible());
-    // Fresh pin-to-bottom whenever the box (re)appears — a build starting up
-    // again after a prior one finished (or the panel closing and reopening,
-    // handled in applyVisibility below) is a new read, not a continuation of
-    // wherever the user had scrolled in the last one.
+    const box = logBoxState(logProbe, isVisible(), logControls);
+    // Fresh pin-to-bottom whenever the box (re)appears — re-expanding after a
+    // collapse (or the panel closing and reopening, handled in sync below) is
+    // a new read, not a continuation of wherever the user had scrolled in the
+    // last one.
     if (box.expanded && !logBoxWasExpanded) userScrolled = false;
     logBoxWasExpanded = box.expanded;
 
@@ -101,6 +129,12 @@ export function init(opts: InitOptions): void {
     // the next poll's render.
     const ansi = new AnsiUp();
     ansi.use_classes = true;
+    // Prototype-free allowlist. ansi_up tests OSC 8 schemes with a plain
+    // `allowlist[scheme]` lookup, so with an object literal every
+    // Object.prototype key is a truthy "allowed scheme" —
+    // `ESC]8;;constructor:…` renders as an anchor. A null-prototype object
+    // closes that without touching the intended http/https policy.
+    ansi.url_allowlist = Object.assign(Object.create(null), { http: 1, https: 1 });
     const logHtml = ansi.ansi_to_html(normalizeLogText(logText));
 
     root.innerHTML = `
@@ -121,7 +155,19 @@ export function init(opts: InitOptions): void {
         .logbanner { opacity: .6; margin: 4px 0; font-size: 12px; }
         #gsx-log-box { max-height: 220px; overflow-y: auto; white-space: pre-wrap;
           background: #101013; border: 1px solid #3c3c44; border-radius: 6px;
-          padding: 6px 8px; margin: 0 0 10px; font-size: 12px; }
+          padding: 6px 8px; margin: 0; font-size: 12px; }
+        #gsx-log-box.nowrap { white-space: pre; overflow-x: auto; }
+        .logctl { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; }
+        .logctl button { margin-right: 0; padding: 2px 8px; font-size: 12px; }
+        .logctl .disclosure { flex: 1 1 auto; text-align: left; }
+        .logctl button[aria-pressed="true"] { background: #3c3c44; border-color: #5e5e68; }
+        /* Maximised: drop the corner anchoring and become a full-viewport
+           column, so the log box (the flex child that grows) takes every
+           pixel left under the header, phase line and buttons. */
+        .panel.maximised { top: 0; left: 0; right: 0; bottom: 0; width: auto; max-width: none;
+          border-radius: 0; border: 0; box-sizing: border-box;
+          display: flex; flex-direction: column; }
+        .panel.maximised #gsx-log-box { flex: 1 1 auto; max-height: none; }
         .ansi-black-fg { color: #6b6b74 } .ansi-red-fg { color: #e05561 }
         .ansi-green-fg { color: #8cc265 } .ansi-yellow-fg { color: #d5a336 }
         .ansi-blue-fg { color: #6a9fd8 } .ansi-magenta-fg { color: #c162de }
@@ -139,20 +185,36 @@ export function init(opts: InitOptions): void {
         .ansi-bright-blue-bg { background: #3c608a } .ansi-bright-magenta-bg { background: #743a86 }
         .ansi-bright-cyan-bg { background: #2c737c } .ansi-bright-white-bg { background: #5e5e68 }
       </style>
-      <div class="panel${box.expanded ? " expanded" : ""}">
+      <div class="panel${box.expanded ? " expanded" : ""}${logControls.maximised ? " maximised" : ""}">
         <h1>gsx dev</h1>
         ${line ? `<p class="phaseline">${escapeHtml(line)}</p>` : ""}
         ${renderStatus(status)}
-        ${
-          box.expanded
-            ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box">${logHtml}</pre>`
-            : ""
-        }
         <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
         <button id="restart" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Restart server</button>
+        ${
+          box.present
+            ? `<div class="logctl">
+            <button id="log-toggle" class="disclosure" aria-expanded="${!logControls.collapsed}">${
+              logControls.collapsed ? "▸" : "▾"
+            } log</button>
+            <button id="log-wrap" aria-pressed="${logControls.wrap}">wrap</button>
+            <button id="log-max" aria-pressed="${logControls.maximised}">max</button>
+          </div>`
+            : ""
+        }
+        ${
+          box.expanded
+            ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box"${
+                logControls.wrap ? "" : ' class="nowrap"'
+              }>${logHtml}</pre>`
+            : ""
+        }
       </div>`;
     root.getElementById("rebuild")?.addEventListener("click", () => send("rebuild"));
     root.getElementById("restart")?.addEventListener("click", () => send("restart-server"));
+    root.getElementById("log-toggle")?.addEventListener("click", () => changeLogControls("toggle-collapsed"));
+    root.getElementById("log-wrap")?.addEventListener("click", () => changeLogControls("toggle-wrap"));
+    root.getElementById("log-max")?.addEventListener("click", () => changeLogControls("toggle-maximised"));
 
     if (box.expanded) {
       const el = root.getElementById("gsx-log-box") as any;
@@ -167,6 +229,28 @@ export function init(opts: InitOptions): void {
         el.scrollTop = userScrolled ? lastScrollTop : el.scrollHeight;
       }
     }
+  };
+
+  // Every control change funnels through here: apply the invariant, persist,
+  // then sync() so the poll timer follows the new expanded state. Wrap and
+  // maximise both change the box's scrollHeight, and collapse/expand rebuilds
+  // the node outright, so any of them makes the remembered scroll offset
+  // meaningless — re-pin to the tail rather than restore a stale position.
+  const changeLogControls = (action: LogControlAction) => {
+    const before = logControls;
+    const next = applyLogControl(before, action);
+    // applyLogControl always returns a fresh object, so compare by value:
+    // Esc on a non-maximised panel must not write storage or re-render.
+    if (next.collapsed === before.collapsed && next.wrap === before.wrap && next.maximised === before.maximised) {
+      return;
+    }
+    logControls = next;
+    writeLogControls(logControls);
+    userScrolled = false;
+    // Re-expanding shows whatever the tail was when polling stopped; fetch
+    // immediately so the user does not read up to a second of stale log.
+    if (before.collapsed && !logControls.collapsed) void fetchLog();
+    sync();
   };
 
   const send = (cmd: string) => {
@@ -243,14 +327,18 @@ export function init(opts: InitOptions): void {
       tickTimer = null;
     }
 
-    // Probe /__gsx/log exactly once, deferred until the first visible+
-    // non-idle moment — a page that stays idle or hidden never requests it.
-    if (!logProbeStarted && nextVisible && nonIdle) {
+    // Probe /__gsx/log exactly once, deferred until the panel is first
+    // visible — a page whose panel is never opened still requests nothing.
+    // No phase gate any more: the box is available in every phase, so an
+    // idle-at-open panel has to learn whether the endpoint exists too. This
+    // one request fires even when the box is collapsed, since whether to show
+    // the controls row at all depends on the answer.
+    if (!logProbeStarted && nextVisible) {
       logProbeStarted = true;
       void fetchLog();
     }
 
-    const box = logBoxState(logProbe, status?.phase, nextVisible);
+    const box = logBoxState(logProbe, nextVisible, logControls);
     if (box.polling && logPollTimer === null) {
       logPollTimer = setInterval(() => void fetchLog(), LOG_POLL_MS);
     } else if (!box.polling && logPollTimer !== null) {
@@ -276,6 +364,14 @@ export function init(opts: InitOptions): void {
   hot.send("gsx:status-request", {});
 
   window.addEventListener("keydown", (e) => {
+    // Esc leaves the full-viewport log, and only that: it is claimed solely
+    // while maximised, so a page whose own Esc handling matters keeps it in
+    // every other state, and Esc never closes the panel itself.
+    if ((e as KeyboardEvent).key === "Escape" && logControls.maximised && !isEditable(e.target)) {
+      e.preventDefault();
+      changeLogControls("exit-maximised");
+      return;
+    }
     if (!isToggleKey(e, isEditable(e.target), opts.key)) return;
     e.preventDefault();
     const { state, actions } = onToggleKey(panelState);
