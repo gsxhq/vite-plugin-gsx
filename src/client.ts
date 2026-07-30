@@ -157,10 +157,11 @@ export function init(opts: InitOptions): void {
           background: #101013; border: 1px solid #3c3c44; border-radius: 6px;
           padding: 6px 8px; margin: 0; font-size: 12px; }
         #gsx-log-box.nowrap { white-space: pre; overflow-x: auto; }
-        .logctl { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; }
-        .logctl button { margin-right: 0; padding: 2px 8px; font-size: 12px; }
-        .logctl .disclosure { flex: 1 1 auto; text-align: left; }
-        .logctl button[aria-pressed="true"] { background: #3c3c44; border-color: #5e5e68; }
+        /* One row of every control: log disclosure, wrap, max, then the two
+           commands. Wraps rather than overflowing when the panel is narrow. */
+        .ctlrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
+        .ctlrow button { margin-right: 0; padding: 2px 8px; font-size: 12px; }
+        .ctlrow button[aria-pressed="true"] { background: #3c3c44; border-color: #5e5e68; }
         /* Maximised: drop the corner anchoring and become a full-viewport
            column, so the log box (the flex child that grows) takes every
            pixel left under the header, phase line and buttons. */
@@ -189,19 +190,19 @@ export function init(opts: InitOptions): void {
         <h1>gsx dev</h1>
         ${line ? `<p class="phaseline">${escapeHtml(line)}</p>` : ""}
         ${renderStatus(status)}
-        <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
-        <button id="restart" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Restart server</button>
-        ${
-          box.present
-            ? `<div class="logctl">
-            <button id="log-toggle" class="disclosure" aria-expanded="${!logControls.collapsed}">${
-              logControls.collapsed ? "▸" : "▾"
-            } log</button>
+        <div class="ctlrow">
+          ${
+            box.present
+              ? `<button id="log-toggle" aria-expanded="${!logControls.collapsed}">${
+                  logControls.collapsed ? "▸" : "▾"
+                } log</button>
             <button id="log-wrap" aria-pressed="${logControls.wrap}">wrap</button>
-            <button id="log-max" aria-pressed="${logControls.maximised}">max</button>
-          </div>`
-            : ""
-        }
+            <button id="log-max" aria-pressed="${logControls.maximised}">max</button>`
+              : ""
+          }
+          <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
+          <button id="restart" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Restart server</button>
+        </div>
         ${
           box.expanded
             ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box"${

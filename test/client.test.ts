@@ -698,6 +698,31 @@ describe("log box controls", () => {
     expect(html()).toContain('id="log-max"');
   });
 
+  it("puts all five controls on one row, commands last", async () => {
+    const { html } = await openPanel();
+    const row = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(html())?.[1] ?? "";
+    const ids = [...row.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(["log-toggle", "log-wrap", "log-max", "rebuild", "restart"]);
+  });
+
+  it("keeps Rebuild and Restart on the row when there is no log endpoint", async () => {
+    // The row is not the log's — it must not vanish with the log controls.
+    vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
+    installFakeStorage();
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const row = /<div class="ctlrow">([\s\S]*?)<\/div>/.exec(host.shadow.innerHTML)?.[1] ?? "";
+    const ids = [...row.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(["rebuild", "restart"]);
+  });
+
   it("renders no controls at all when the endpoint is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
     installFakeStorage();
