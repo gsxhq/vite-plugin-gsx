@@ -500,3 +500,99 @@ describe("log box", () => {
     expect(el3.scrollTop).toBe(el3.scrollHeight);
   });
 });
+
+describe("log box ANSI rendering", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T12:00:00Z"));
+  });
+
+  // Serve `body` from /__gsx/log, open the panel mid-build so the log box
+  // expands, and return the rendered shadow-root HTML. Fresh module + fake
+  // DOM per call, so no state leaks between cases.
+  async function renderWithLog(body: string): Promise<string> {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeLogResponse(true, body, "0")),
+    );
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+    return host.shadow.innerHTML;
+  }
+
+  // Each case: log text served by /__gsx/log -> assertion on the rendered
+  // shadow-root HTML.
+  it("renders SGR colors as ansi-* classes", async () => {
+    const html = await renderWithLog("\x1b[31mred\x1b[0m");
+    expect(html).toContain('<span class="ansi-red-fg">red</span>');
+  });
+
+  it("renders bright colors and bold", async () => {
+    const html = await renderWithLog("\x1b[1;92mboldbright\x1b[0m");
+    expect(html).toContain('class="ansi-bright-green-fg"');
+    expect(html).toContain("font-weight:bold");
+  });
+
+  it("renders 256-color and truecolor as inline rgb", async () => {
+    const html = await renderWithLog("\x1b[38;5;208m256\x1b[0m \x1b[38;2;10;20;30mtrue\x1b[0m");
+    expect(html).toContain("color:rgb(255,135,0)");
+    expect(html).toContain("color:rgb(10,20,30)");
+  });
+
+  it("escapes HTML in log content", async () => {
+    const html = await renderWithLog('<script>alert(1)</script> & "q"');
+    expect(html).not.toContain("<script>alert(1)");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("does not turn a javascript: OSC 8 hyperlink into an anchor", async () => {
+    const html = await renderWithLog("\x1b]8;;javascript:alert(1)\x07click\x1b]8;;\x07");
+    expect(html).not.toContain("javascript:alert(1)");
+    expect(html).not.toContain("<a href");
+  });
+
+  it("collapses \\r progress lines", async () => {
+    const html = await renderWithLog("10%\r50%\r100%\n");
+    expect(html).toContain("100%");
+    expect(html).not.toContain("10%\r");
+  });
+
+  it("strips OSC title sequences", async () => {
+    const html = await renderWithLog("a\x1b]0;my title\x07b");
+    expect(html).not.toContain("my title");
+    expect(html).toContain("ab");
+  });
+
+  it("does not carry color state from one poll into the next", async () => {
+    // A tail that starts mid-escape or never resets must not tint the NEXT
+    // poll of the SAME panel instance. A fresh AnsiUp per render is what
+    // guarantees this — so this case must drive two polls through one client,
+    // not two renderWithLog calls (those reset the module and would pass
+    // even with a shared converter).
+    let body = "\x1b[31mno reset here";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeLogResponse(true, body, "0")),
+    );
+    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { init } = await loadClient();
+    const hot = makeHot();
+    init({ key: "d", hot } as any);
+    const host = bodyChildren[0]!;
+    press(keydownListeners);
+    hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.shadow.innerHTML).toContain("ansi-red-fg");
+
+    body = "plain";
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(host.shadow.innerHTML).toContain("plain");
+    expect(host.shadow.innerHTML).not.toContain("ansi-red-fg");
+  });
+});

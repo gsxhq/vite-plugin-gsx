@@ -18,8 +18,10 @@ import {
   type PanelActions,
   logBoxState,
   logTruncationBanner,
+  normalizeLogText,
   type LogProbeResult,
 } from "./client-logic.js";
+import { AnsiUp } from "ansi_up";
 // Type-only: erased at build time, so dist/client.js keeps no runtime
 // reference to "vite" (it must stay a dependency-free browser module).
 import type { ViteHotContext } from "vite/types/hot.js";
@@ -94,6 +96,12 @@ export function init(opts: InitOptions): void {
 
     const line = status ? phaseLine(status, Date.now()) : "";
     const banner = logTruncationBanner(logStart);
+    // Fresh converter per render: ansi_up carries SGR state across calls, so
+    // a truncated/unreset escape sequence in one poll's tail must not tint
+    // the next poll's render.
+    const ansi = new AnsiUp();
+    ansi.use_classes = true;
+    const logHtml = ansi.ansi_to_html(normalizeLogText(logText));
 
     root.innerHTML = `
       <style>
@@ -121,7 +129,7 @@ export function init(opts: InitOptions): void {
         ${renderStatus(status)}
         ${
           box.expanded
-            ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box">${escapeHtml(logText)}</pre>`
+            ? `${banner ? `<p class="logbanner">${escapeHtml(banner)}</p>` : ""}<pre id="gsx-log-box">${logHtml}</pre>`
             : ""
         }
         <button id="rebuild" ${buttonsDisabled(status, inflight) ? "disabled" : ""}>Rebuild</button>
