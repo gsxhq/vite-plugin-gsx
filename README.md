@@ -293,11 +293,12 @@ Disable it with `gsx({ devPanel: false })`, or rebind the toggle key with
 `gsx({ devPanel: { key: "k" } })` (Cmd/Ctrl-K). `/__gsx/cmd` stays active
 either way — `gsx dev`'s front-door respawn verification depends on it.
 
-When a cycle needed a full in-place reload of the Go world (e.g. a `.go`
-source edit, not just a `.gsx` one), the panel's last-cycle line and the
-terminal both note why — `last cycle 2m10s — full reload: changed Go source
-dep/dep.go` — so a slower cycle is never a mystery. Omitted entirely for the
-common warm-cycle case.
+When a cycle needs a **world reload** — gsx re-opening its whole Go process
+state in place (e.g. for a `.go` source edit, not just a `.gsx` one; distinct
+from the browser's own full page reload under "Full-reload only" below) — the
+panel's last-cycle line and the terminal both note why: `last cycle 2m10s —
+full reload: changed Go source dep/dep.go`. Omitted entirely for the common
+warm-cycle case.
 
 It also auto-shows itself once a cycle has been running for `autoShow`
 milliseconds (default 3000; set `false` to require Cmd-D), and when

@@ -344,6 +344,14 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           }
           return;
         }
+        // Note a full in-place world reload (shared formatter with the panel's
+        // status line — see client-logic.ts's reloadNote). The wire protocol
+        // sets `reload` independent of `ok` (gen/watchemit.go — a .go edit can
+        // force a reload AND fail to compile), so this must not be nested
+        // inside either the ok or !ok branch below: omitted (never a blank
+        // "full reload:") only for the common warm-cycle case.
+        const note = reloadNote(ev.reload);
+        if (note) logger.info(`[gsx] ${note}`, { timestamp: true });
         if (!ev.ok) {
           const diagnostics = (ev.diagnostics ?? []) as GsxDiagnostic[];
           if (isBuildOnly(diagnostics) && currentErrorPayload) return;
@@ -367,12 +375,6 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           // the legacy recovery reload so standalone Vite still recovers.
           currentErrorPayload = null;
           loggedDiagnostics.clear();
-          // Note a full in-place world reload (shared formatter with the
-          // panel's status line — see client-logic.ts's reloadNote): omitted
-          // (never a blank "full reload:") for the common warm-cycle case,
-          // independent of the error-recovery early return below.
-          const note = reloadNote(ev.reload);
-          if (note) logger.info(`[gsx] ${note}`, { timestamp: true });
           if (!errorShown) return;
           errorShown = false;
           if (opts.daemon) server.ws.send({ type: "full-reload", path: "*" });

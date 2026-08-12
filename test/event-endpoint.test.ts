@@ -234,6 +234,41 @@ describe("/__gsx/event", () => {
     expect(s.config.logger.info).not.toHaveBeenCalled();
   });
 
+  it("logs the full-reload reason on a FAILED generate that carries one too", async () => {
+    // The wire protocol sets `reload` independent of `ok` (a .go edit can force
+    // a world reload AND fail to compile) — the terminal must not hide that a
+    // slow reload happened just because the cycle also produced diagnostics.
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+    const h = s.handlers["/__gsx/event"]!;
+
+    await call(h, {
+      event: "generated",
+      ok: false,
+      durationMs: 1,
+      written: [],
+      diagnostics: [
+        {
+          file: "/Users/jackieli/personal/hello-gsx/main.go",
+          range: { start: { line: 69, col: 2 }, end: { line: 69, col: 7 } },
+          severity: "error",
+          message: "undefined: hello",
+        },
+      ],
+      reload: "changed Go source dep/dep.go",
+    });
+
+    expect(s.config.logger.info).toHaveBeenCalledWith(
+      "[gsx] full reload: changed Go source dep/dep.go",
+      { timestamp: true },
+    );
+    expect(s.errors).toEqual([
+      "[gsx] error /Users/jackieli/personal/hello-gsx/main.go",
+      "[gsx]   undefined: hello",
+    ]);
+  });
+
   it("replays the current error overlay to newly connected clients", async () => {
     const p = gsx();
     const s = fakeServer();
