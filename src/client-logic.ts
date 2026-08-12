@@ -78,19 +78,33 @@ function humanizeDuration(ms: number): string {
   return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 
+// Shared between the status line's "last cycle" segment (phaseLine, below)
+// and the generated-event terminal log (index.ts's applyEvent): the wire
+// contract for both `status.lastCycle.reload` and `generated.reload` is an
+// optional string, present only when the cycle required a full in-place
+// world reload (see gen/devstatus.go's cycleStat.Reload doc). Absent/empty
+// renders nothing — never a rendered empty reason.
+export function reloadNote(reload: unknown): string {
+  return typeof reload === "string" && reload !== "" ? `full reload: ${reload}` : "";
+}
+
 export function phaseLine(status: any, nowMs: number): string {
   const phase = status?.phase;
   if (typeof phase !== "string" || phase === "") return "";
   const durationMs = status.lastCycle?.durationMs;
   const hasLastCycle =
     typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0;
+  const lastCycleSegment = () => {
+    const note = reloadNote(status.lastCycle?.reload);
+    return `last cycle ${humanizeDuration(durationMs)}${note ? ` — ${note}` : ""}`;
+  };
 
   if (phase === "idle") {
     // idle isn't "running" — a ticking "idle… started 42s ago" head reads as
     // if something named idle is in progress, and the renderStatus rows
     // directly below already say "phase: idle". Show only the last-cycle
     // summary (nothing at all if there hasn't been a cycle yet).
-    return hasLastCycle ? `last cycle ${humanizeDuration(durationMs)}` : "";
+    return hasLastCycle ? lastCycleSegment() : "";
   }
 
   let head = `${phase}…`;
@@ -106,7 +120,7 @@ export function phaseLine(status: any, nowMs: number): string {
     }
   }
   const segments = [head];
-  if (hasLastCycle) segments.push(`last cycle ${humanizeDuration(durationMs)}`);
+  if (hasLastCycle) segments.push(lastCycleSegment());
   return segments.join(" · ");
 }
 

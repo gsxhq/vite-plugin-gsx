@@ -7,6 +7,7 @@ import {
   autoShowDelay,
   DEFAULT_AUTO_SHOW_MS,
   phaseLine,
+  reloadNote,
   initialPanelState,
   onStatus,
   onTimerFired,
@@ -195,6 +196,50 @@ describe("phaseLine", () => {
   it("idle with no cycle yet: empty (a manually-opened panel on a fresh idle project shows no phase line)", () => {
     const status = { phase: "idle", phaseSince: "2026-07-24T12:00:00Z" };
     expect(phaseLine(status, now)).toBe("");
+  });
+  it("appends the reload reason after the cycle duration when lastCycle.reload is set", () => {
+    const status = {
+      phase: "building",
+      phaseSince: "2026-07-24T12:00:00Z",
+      lastCycle: { durationMs: 130000, reload: "changed Go source dep/dep.go" },
+    };
+    expect(phaseLine(status, now)).toBe(
+      "building… started 42s ago · last cycle 2m10s — full reload: changed Go source dep/dep.go",
+    );
+  });
+  it("idle + reload reason: last-cycle-only line still carries the note", () => {
+    const status = {
+      phase: "idle",
+      lastCycle: { durationMs: 130000, reload: "changed Go source dep/dep.go" },
+    };
+    expect(phaseLine(status, now)).toBe("last cycle 2m10s — full reload: changed Go source dep/dep.go");
+  });
+  it("omits the reload note when lastCycle.reload is absent (warm cycle)", () => {
+    const status = { phase: "building", lastCycle: { durationMs: 130000 } };
+    expect(phaseLine(status, now)).toBe("building… · last cycle 2m10s");
+  });
+  it("omits the reload note when lastCycle.reload is an empty string, never a bare dash", () => {
+    const status = { phase: "building", lastCycle: { durationMs: 130000, reload: "" } };
+    const line = phaseLine(status, now);
+    expect(line).toBe("building… · last cycle 2m10s");
+    expect(line).not.toContain("—");
+  });
+});
+
+describe("reloadNote", () => {
+  it("formats a non-empty reason", () => {
+    expect(reloadNote("changed Go source dep/dep.go")).toBe("full reload: changed Go source dep/dep.go");
+  });
+  it("is empty for an absent reason", () => {
+    expect(reloadNote(undefined)).toBe("");
+    expect(reloadNote(null)).toBe("");
+  });
+  it("is empty for an empty-string reason — never a rendered empty note", () => {
+    expect(reloadNote("")).toBe("");
+  });
+  it("is empty for a non-string reason (defensive, malformed wire payload)", () => {
+    expect(reloadNote(42)).toBe("");
+    expect(reloadNote({})).toBe("");
   });
 });
 

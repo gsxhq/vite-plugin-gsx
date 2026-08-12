@@ -194,6 +194,46 @@ describe("/__gsx/event", () => {
     expect(s.sent).toEqual([]);
   });
 
+  it("logs the full-reload reason on a successful generate that carries one", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+    const h = s.handlers["/__gsx/event"]!;
+
+    await call(h, {
+      event: "generated",
+      ok: true,
+      durationMs: 1,
+      written: ["a.x.go"],
+      diagnostics: [],
+      reload: "changed Go source dep/dep.go",
+    });
+
+    expect(s.config.logger.info).toHaveBeenCalledWith(
+      "[gsx] full reload: changed Go source dep/dep.go",
+      { timestamp: true },
+    );
+  });
+
+  it("does not log anything for a warm cycle (reload absent or empty)", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+    const h = s.handlers["/__gsx/event"]!;
+
+    await call(h, { event: "generated", ok: true, durationMs: 1, written: ["a.x.go"], diagnostics: [] });
+    await call(h, {
+      event: "generated",
+      ok: true,
+      durationMs: 1,
+      written: ["a.x.go"],
+      diagnostics: [],
+      reload: "",
+    });
+
+    expect(s.config.logger.info).not.toHaveBeenCalled();
+  });
+
   it("replays the current error overlay to newly connected clients", async () => {
     const p = gsx();
     const s = fakeServer();

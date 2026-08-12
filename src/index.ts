@@ -8,6 +8,7 @@ import { normalizePath, type ConfigEnv, type Plugin, type ViteDevServer } from "
 import { resolveOptions, resolveDevPanel, type GsxOptions, type DevPanelSetting } from "./options.js";
 import { toViteError, type GsxDiagnostic, type ViteError } from "./diagnostics.js";
 import { PanelChannel } from "./panel.js";
+import { reloadNote } from "./client-logic.js";
 
 export type { GsxOptions };
 
@@ -366,6 +367,12 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           // the legacy recovery reload so standalone Vite still recovers.
           currentErrorPayload = null;
           loggedDiagnostics.clear();
+          // Note a full in-place world reload (shared formatter with the
+          // panel's status line — see client-logic.ts's reloadNote): omitted
+          // (never a blank "full reload:") for the common warm-cycle case,
+          // independent of the error-recovery early return below.
+          const note = reloadNote(ev.reload);
+          if (note) logger.info(`[gsx] ${note}`, { timestamp: true });
           if (!errorShown) return;
           errorShown = false;
           if (opts.daemon) server.ws.send({ type: "full-reload", path: "*" });
