@@ -123,7 +123,11 @@ export function init(opts: InitOptions): void {
   const host = document.createElement("gsx-devpanel");
   const root = host.attachShadow({ mode: "open" });
   host.style.display = "none";
-  document.body.appendChild(host);
+  // Mounted on <html>, not <body>: the panel is client-only and never part of
+  // a server response, so anything that swaps or morphs body's children
+  // (htmx hx-boost, its outerSync history restore, Turbo, Alpine morph)
+  // would remove it. Nothing but a full page load replaces <html>'s children.
+  document.documentElement.appendChild(host);
 
   const isVisible = () => host.style.display !== "none";
 

@@ -49,11 +49,22 @@ class FakeHost {
   }
 }
 
+// The host must land on <html>, never <body>: htmx boosts, Turbo and
+// morph-style navigations replace or morph body's children wholesale, and a
+// client-only element that isn't in the server response gets removed. So the
+// fake keeps the two mount points apart and tests assert on `mounted` (the
+// <html> children) while `bodyChildren` must stay empty.
 function installFakeDom() {
+  const mounted: FakeHost[] = [];
   const bodyChildren: FakeHost[] = [];
   const keydownListeners: Array<(e: unknown) => void> = [];
   const fakeDocument = {
     createElement: () => new FakeHost(),
+    documentElement: {
+      appendChild: (el: FakeHost) => {
+        mounted.push(el);
+      },
+    },
     body: {
       appendChild: (el: FakeHost) => {
         bodyChildren.push(el);
@@ -67,7 +78,7 @@ function installFakeDom() {
   };
   (globalThis as any).document = fakeDocument;
   (globalThis as any).window = fakeWindow;
-  return { bodyChildren, keydownListeners };
+  return { mounted, bodyChildren, keydownListeners };
 }
 
 function press(keydownListeners: Array<(e: any) => void>, key = "d") {
@@ -134,15 +145,26 @@ afterEach(() => {
 });
 
 describe("init", () => {
+  it("mounts the host on <html>, outside <body>, so body-swapping navigations (htmx boost, morph, history restore) cannot remove it", async () => {
+    const { mounted, bodyChildren } = installFakeDom();
+    const { init } = await loadClient();
+
+    init({ key: "d", hot: { send: vi.fn(), on: vi.fn() } } as any);
+
+    expect(mounted.length).toBe(1);
+    expect(bodyChildren.length).toBe(0);
+  });
+
+
   it("is idempotent: a second call does not double-register the host element or the keydown listener", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = { send: vi.fn(), on: vi.fn() };
 
     init({ key: "d", hot } as any);
     init({ key: "d", hot } as any);
 
-    expect(bodyChildren.length).toBe(1);
+    expect(mounted.length).toBe(1);
     expect(keydownListeners.length).toBe(1);
     expect(hot.on).toHaveBeenCalledTimes(1);
   });
@@ -171,11 +193,11 @@ describe("auto-show timer", () => {
   });
 
   it("auto-shows after the configured delay if the cycle is still non-idle", async () => {
-    const { bodyChildren } = installFakeDom();
+    const { mounted } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: 3000, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     expect(host.style.display).toBe("none");
@@ -189,11 +211,11 @@ describe("auto-show timer", () => {
   });
 
   it("idle before expiry cancels the timer — the panel never appears", async () => {
-    const { bodyChildren } = installFakeDom();
+    const { mounted } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: 3000, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(1500);
@@ -204,11 +226,11 @@ describe("auto-show timer", () => {
   });
 
   it("autoShow: false disables the timer entirely, but Cmd-D still opens the panel", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: false, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(10000);
@@ -219,11 +241,11 @@ describe("auto-show timer", () => {
   });
 
   it("an auto-shown panel hides itself on idle; a manually-opened one stays", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: 3000, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     // Auto-opened.
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -241,11 +263,11 @@ describe("auto-show timer", () => {
   });
 
   it("Cmd-D always wins: closing a pending-timer panel early cancels the auto-show", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: 3000, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(1000);
@@ -268,11 +290,11 @@ describe("phase-line ticking", () => {
   });
 
   it("re-renders the phase line every second while visible and non-idle", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: false, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners); // open manually so ticking can be observed immediately
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -286,11 +308,11 @@ describe("phase-line ticking", () => {
   });
 
   it("stops ticking (no re-render) once the panel is hidden", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: false, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -303,11 +325,11 @@ describe("phase-line ticking", () => {
   });
 
   it("stops ticking once the phase goes idle", async () => {
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", autoShow: false, hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -359,11 +381,11 @@ describe("log box", () => {
     // visible+idle panel probes, renders the box, and polls.
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "idle log\n", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "idle" });
@@ -397,11 +419,11 @@ describe("log box", () => {
   it("probes once on the first visible+non-idle moment, expands, and polls ~1s", async () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "hello world\n", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -422,11 +444,11 @@ describe("log box", () => {
   it("a 404 probe never shows a box and is never retried", async () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(false));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -444,11 +466,11 @@ describe("log box", () => {
       throw new Error("network down");
     });
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -461,11 +483,11 @@ describe("log box", () => {
   it("shows a truncation banner when x-gsx-log-start > 0, not when it's 0", async () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "tail only", "128"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -480,11 +502,11 @@ describe("log box", () => {
     // read what it said, so the box now survives the transition to idle.
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "log body", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -502,11 +524,11 @@ describe("log box", () => {
   it("pins the log box to the bottom by default", async () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "content", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -519,11 +541,11 @@ describe("log box", () => {
   it("stays at the user's scroll position across polls once they scroll up, and resets on reopen", async () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "content", "0"));
     vi.stubGlobal("fetch", fetchMock);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
 
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
@@ -564,11 +586,11 @@ describe("log box ANSI rendering", () => {
       "fetch",
       vi.fn(async () => fakeLogResponse(true, body, "0")),
     );
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(0);
@@ -629,11 +651,11 @@ describe("log box ANSI rendering", () => {
       "fetch",
       vi.fn(async () => fakeLogResponse(true, body, "0")),
     );
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "building", phaseSince: "2026-07-24T12:00:00Z" });
     await vi.advanceTimersByTimeAsync(0);
@@ -671,11 +693,11 @@ describe("log box controls", () => {
     const fetchMock = vi.fn(async () => fakeLogResponse(true, "line one\nline two\n", "0"));
     vi.stubGlobal("fetch", fetchMock);
     const { store } = installFakeStorage(seed);
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(0);
@@ -738,11 +760,11 @@ describe("log box controls", () => {
     // Rebuild/Restart must survive.
     vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
     installFakeStorage();
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(0);
@@ -756,11 +778,11 @@ describe("log box controls", () => {
   it("renders no controls at all when the endpoint is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(false)));
     installFakeStorage();
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(0);
@@ -913,11 +935,11 @@ describe("log box controls", () => {
       },
     };
     vi.stubGlobal("fetch", vi.fn(async () => fakeLogResponse(true, "log\n", "0")));
-    const { bodyChildren, keydownListeners } = installFakeDom();
+    const { mounted, keydownListeners } = installFakeDom();
     const { init } = await loadClient();
     const hot = makeHot();
     init({ key: "d", hot } as any);
-    const host = bodyChildren[0]!;
+    const host = mounted[0]!;
     press(keydownListeners);
     hot.handlers["gsx:status"]!({ phase: "idle" });
     await vi.advanceTimersByTimeAsync(0);
