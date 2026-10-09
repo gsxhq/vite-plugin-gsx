@@ -367,7 +367,11 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           if (err) {
             errorShown = true;
             currentErrorPayload = { type: "error", err };
-            server.ws.send(currentErrorPayload);
+            // Send to the connected clients only. server.ws.send would let vite
+            // buffer an error sent while none is connected and replay it to the
+            // next one even after a fix; the connection replay above is the one
+            // source for clients that connect later.
+            for (const client of server.ws.clients) client.send(currentErrorPayload);
           }
         } else {
           // Clear the current overlay state. gsx dev triggers the actual reload

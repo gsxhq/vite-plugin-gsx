@@ -20,6 +20,8 @@ function fakeServer() {
     middlewares: { use: (path: string, fn: Function) => (handlers[path] = fn) },
     ws: {
       send: (msg: any) => sent.push(msg),
+      // One connected browser; errors go to clients directly (see index.ts).
+      clients: new Set([{ send: (msg: any) => sent.push(msg) }]),
       on: (event: string, fn: Function) => (wsHandlers[event] = fn),
     },
     httpServer: { on: () => {} },
