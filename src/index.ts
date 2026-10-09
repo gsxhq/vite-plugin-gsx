@@ -330,6 +330,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
       // Reused by both the daemon stdout loop (opts.daemon) and POST /__gsx/event.
       let errorShown = false;
       let currentErrorPayload: { type: "error"; err: ViteError } | null = null;
+      let currentBuildOnly = false;
       const loggedDiagnostics = new Set<string>();
       server.ws.on("connection", (client: any) => {
         if (currentErrorPayload) client.send(JSON.stringify(currentErrorPayload));
@@ -354,7 +355,10 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
         if (note) logger.info(`[gsx] ${note}`, { timestamp: true });
         if (!ev.ok) {
           const diagnostics = (ev.diagnostics ?? []) as GsxDiagnostic[];
-          if (isBuildOnly(diagnostics) && currentErrorPayload) return;
+          const buildOnly = isBuildOnly(diagnostics);
+          // A build error never replaces a source diagnostic (that one says
+          // more), but a newer build error does replace an older one.
+          if (buildOnly && currentErrorPayload && !currentBuildOnly) return;
           for (const d of diagnostics) {
             const key = diagnosticKey(d);
             if (loggedDiagnostics.has(key)) continue;
@@ -367,7 +371,12 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           if (err) {
             errorShown = true;
             currentErrorPayload = { type: "error", err };
-            server.ws.send(currentErrorPayload);
+            currentBuildOnly = buildOnly;
+            // Send to the connected clients only. server.ws.send would let vite
+            // buffer an error sent while none is connected and replay it to the
+            // next one even after a fix; the connection replay above is the one
+            // source for clients that connect later.
+            for (const client of server.ws.clients) client.send(currentErrorPayload);
           }
         } else {
           // Clear the current overlay state. gsx dev triggers the actual reload

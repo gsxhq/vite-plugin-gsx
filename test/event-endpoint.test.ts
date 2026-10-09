@@ -20,6 +20,8 @@ function fakeServer() {
     middlewares: { use: (path: string, fn: Function) => (handlers[path] = fn) },
     ws: {
       send: (msg: any) => sent.push(msg),
+      // One connected browser; errors go to clients directly (see index.ts).
+      clients: new Set([{ send: (msg: any) => sent.push(msg) }]),
       on: (event: string, fn: Function) => (wsHandlers[event] = fn),
     },
     httpServer: { on: () => {} },
@@ -192,6 +194,29 @@ describe("/__gsx/event", () => {
 
     expect(s.errors).toEqual([]);
     expect(s.sent).toEqual([]);
+  });
+
+  it("replaces a shown build error with a newer build error", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+    const h = s.handlers["/__gsx/event"]!;
+    const buildError = (message: string) => ({
+      event: "generated",
+      ok: false,
+      durationMs: 1,
+      written: [],
+      diagnostics: [
+        { file: "build", range: { start: { line: 1, col: 1 }, end: { line: 1, col: 1 } }, severity: "error", message },
+      ],
+    });
+
+    await call(h, buildError("VITE_PORT 5173 is already in use"));
+    s.sent.length = 0;
+    await call(h, buildError("# app\n./main.go:3:2: undefined: x"));
+
+    const shown = s.sent.filter((m) => m.type === "error").map((m) => m.err.message);
+    expect(shown).toEqual(["# app\n./main.go:3:2: undefined: x"]);
   });
 
   it("logs the full-reload reason on a successful generate that carries one", async () => {
