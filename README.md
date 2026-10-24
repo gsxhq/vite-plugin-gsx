@@ -247,7 +247,10 @@ interstitial page while the Go backend is down or restarting.
 **What it does:**
 
 - Intercepts proxy errors and serves a dark-mode HTML interstitial instead of an
-  empty browser error page.
+  empty browser error page, when the backend cannot be reached.
+- A backend that accepted the connection but failed before answering gets a
+  plain `502`. A response the backend already started is passed through
+  untouched, and cut off if the backend dies before finishing it.
 - The interstitial carries Vite's client script, so the normal `/__reload` push
   reloads it when the Go server returns. No manual refresh is needed.
 - It polls `/__dev/status` every second and reloads when the backend is healthy.

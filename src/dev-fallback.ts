@@ -20,7 +20,10 @@ export interface DevFallbackOptions {
 export interface DevFallback {
   /** Registers GET <statusPath> → { up, log }. */
   plugin: Plugin;
-  /** Vite proxy `configure` hook: serves the interstitial on a proxy error. */
+  /**
+   * Vite proxy `configure` hook: serves the interstitial when the backend is
+   * unreachable, and leaves a response the backend already started alone.
+   */
   configureProxy: (proxy: any) => void;
 }
 
@@ -76,9 +79,30 @@ export function devFallback(opts: DevFallbackOptions = {}): DevFallback {
     },
   };
 
+  // Per proxied response: whether its upstream connection was established,
+  // and whether the upstream started answering it.
+  const connected = new WeakSet<object>();
+  const answered = new WeakSet<object>();
+
   const configureProxy = (proxy: any) => {
-    proxy.on("error", (_err: unknown, _req: unknown, res: any) => {
-      serveBackendDown(res, html);
+    // http-proxy emits proxyReq once the upstream request has a socket (not for
+    // requests carrying an Expect header; those count as never connected).
+    proxy.on("proxyReq", (proxyReq: http.ClientRequest, _req: unknown, res: object) => {
+      const sock = proxyReq.socket;
+      if (!sock) return;
+      if (sock.connecting) sock.once("connect", () => connected.add(res));
+      else connected.add(res);
+    });
+    proxy.on("proxyRes", (proxyRes: http.IncomingMessage, _req: unknown, res: http.ServerResponse) => {
+      answered.add(res);
+      // http-proxy pipes proxyRes into res but never ends res when the upstream
+      // dies mid-body; cut the response off so the client sees the failure.
+      proxyRes.once("close", () => {
+        if (!proxyRes.complete && !res.writableEnded) cutOff(res);
+      });
+    });
+    proxy.on("error", (err: unknown, _req: unknown, res: any) => {
+      serveProxyError(res, html, err, { connected: connected.has(res), answered: answered.has(res) });
     });
   };
 
@@ -129,9 +153,18 @@ export function readLogTail(logFile: string, maxBytes = 20000): string {
   }
 }
 
-// serveBackendDown writes the interstitial on a proxy error. A failed WS upgrade
-// passes a net.Socket (no writeHead) — destroy it; the client reconnects.
-export function serveBackendDown(res: any, html: string): void {
+// serveProxyError answers a proxy error. A failed WS upgrade passes a
+// net.Socket (no writeHead): destroy it, the client reconnects. Once the
+// upstream has answered, the response is the upstream's: http-proxy keeps
+// piping it and the proxyRes close handler cuts it off if it dies. A backend
+// that accepted the connection but failed before answering is up, so it gets a
+// plain 502; only an unreachable backend gets the self-reloading interstitial.
+export function serveProxyError(
+  res: any,
+  html: string,
+  err: unknown,
+  state: { connected: boolean; answered: boolean },
+): void {
   if (typeof res.writeHead !== "function") {
     try {
       res.destroy();
@@ -141,13 +174,35 @@ export function serveBackendDown(res: any, html: string): void {
     return;
   }
   if (res.writableEnded) return;
-  if (!res.headersSent) {
-    res.writeHead(503, {
-      "content-type": "text/html; charset=utf-8",
+  if (state.answered) {
+    // http-proxy has set the upstream's status and headers but writes them
+    // only with the first body chunk. Send them now: Vite's own error handler
+    // runs after this one and replaces an unsent response with a 500.
+    if (!res.headersSent) res.flushHeaders();
+    return;
+  }
+  if (state.connected) {
+    const code = (err as { code?: string } | null)?.code ?? "error";
+    res.writeHead(502, {
+      "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store",
     });
+    res.end(`gsx dev: the backend connection failed before it responded (${code})\n`);
+    return;
   }
+  res.writeHead(503, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
   res.end(html);
+}
+
+// cutOff ends a response the upstream abandoned: send what was already relayed,
+// status and headers included, then close the connection so the client sees an
+// incomplete response instead of waiting for the rest.
+function cutOff(res: http.ServerResponse): void {
+  if (!res.headersSent) res.flushHeaders();
+  res.socket?.end();
 }
 
 // interstitial builds the dark recovery page. It carries @vite/client (so a

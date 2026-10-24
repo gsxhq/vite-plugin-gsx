@@ -8,7 +8,7 @@ import {
   devFallback,
   backendUp,
   readLogTail,
-  serveBackendDown,
+  serveProxyError,
   type DevFallback,
 } from "../src/dev-fallback.js";
 
@@ -64,8 +64,9 @@ describe("readLogTail", () => {
   });
 });
 
-describe("serveBackendDown", () => {
-  it("writes 503 + HTML to an HTTP response", () => {
+describe("serveProxyError", () => {
+  const down = { connected: false, answered: false };
+  it("writes 503 + HTML when the backend was never reached", () => {
     let status = 0;
     let body = "";
     const res: any = {
@@ -73,14 +74,14 @@ describe("serveBackendDown", () => {
       writeHead(s: number) { status = s; },
       end(s: string) { body = s; },
     };
-    serveBackendDown(res, "<html>INTERSTITIAL</html>");
+    serveProxyError(res, "<html>INTERSTITIAL</html>", new Error("ECONNREFUSED"), down);
     expect(status).toBe(503);
     expect(body).toContain("INTERSTITIAL");
   });
   it("destroys a socket-like response (no writeHead)", () => {
     let destroyed = false;
     const sock: any = { destroy() { destroyed = true; } };
-    serveBackendDown(sock, "<html></html>");
+    serveProxyError(sock, "<html></html>", new Error("ECONNREFUSED"), down);
     expect(destroyed).toBe(true);
   });
 });
