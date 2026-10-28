@@ -107,12 +107,32 @@ describe("/__gsx/event", () => {
     });
 
     expect(s.errors).toEqual([
-      "[gsx] error build",
-      "[gsx]   # hello-gsx",
-      "[gsx]   ./main.go:69:2: undefined: hello",
       "[gsx] error /Users/jackieli/personal/hello-gsx/main.go",
       "[gsx]   undefined: hello",
     ]);
+  });
+
+  it("shows gsx dev's own build and hard errors in the overlay without logging them again", async () => {
+    const p = gsx();
+    const s = fakeServer();
+    (p[0] as any).configureServer(s);
+    const h = s.handlers["/__gsx/event"]!;
+    const synthetic = (file: string, message: string) => ({
+      event: "generated",
+      ok: false,
+      durationMs: 1,
+      written: [],
+      diagnostics: [
+        { file, range: { start: { line: 1, col: 1 }, end: { line: 1, col: 1 } }, severity: "error", message },
+      ],
+    });
+
+    await call(h, synthetic("build", "# app\n./main.go:3:2: undefined: x"));
+    await call(h, synthetic("gsx", "parse app.gsx: unexpected EOF"));
+
+    expect(s.errors).toEqual([]);
+    const shown = s.sent.filter((m) => m.type === "error").map((m) => m.err.message);
+    expect(shown).toEqual(["# app\n./main.go:3:2: undefined: x", "parse app.gsx: unexpected EOF"]);
   });
 
   it("does not repeat identical diagnostic logs until recovery", async () => {

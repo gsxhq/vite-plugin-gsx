@@ -337,7 +337,11 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
         const replay = panel.replayPayload();
         if (replay) client.send(replay);
       });
-      const applyEvent = (ev: any) => {
+      // gsx dev prints its own build and hard errors to the terminal before
+      // posting them as the synthetic "build"/"gsx" diagnostics, so events
+      // from /__gsx/event log only the source diagnostics; the daemon prints
+      // nothing itself.
+      const applyEvent = (ev: any, fromGsxDev: boolean) => {
         if (panel.applyStatus(ev)) return;
         if (ev.event !== "generated") {
           if (ev.event === "error") {
@@ -361,6 +365,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           if (buildOnly && currentErrorPayload && !currentBuildOnly) return;
           for (const d of diagnostics) {
             const key = diagnosticKey(d);
+            if (fromGsxDev && (d.file === "build" || d.file === "gsx")) continue;
             if (loggedDiagnostics.has(key)) continue;
             loggedDiagnostics.add(key);
             for (const line of diagnosticLogLines(d)) {
@@ -401,7 +406,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
         req.on("data", (c: Buffer) => chunks.push(c));
         req.on("end", () => {
           try {
-            applyEvent(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            applyEvent(JSON.parse(Buffer.concat(chunks).toString("utf8")), true);
           } catch {
             /* ignore malformed bodies */
           }
@@ -444,7 +449,7 @@ export function gsx(options: GsxOptions = {}): Plugin[] {
           } catch {
             return;
           }
-          applyEvent(ev);
+          applyEvent(ev, false);
         });
         child.stderr.on("data", (b) => logger.info(String(b)));
         child.on("exit", (code) =>
