@@ -141,6 +141,77 @@ When `VITE_PORT` is absent, `gsx dev` scans from 5173 upward and exports a
 matching `VITE_DEV_URL`. When `VITE_PORT` is present, it is authoritative: if the
 port is already in use, `gsx dev` exits before starting the Go server or watcher.
 
+### HTTPS with an existing mkcert certificate
+
+The plugin supports Vite's native [`server.https`](https://vite.dev/config/server-options#server-https).
+Vite terminates TLS for the app, assets, plugin control routes and the secure
+WebSocket used for status, the error overlay and full reloads. No additional
+plugin TLS option or HTTPS proxy process is required. The Go upstream can
+continue to use plain HTTP on loopback.
+
+Use your existing mkcert certificate and private key for the hostname you open
+in the browser. If you need a certificate for localhost, create one with your
+existing local CA:
+
+```bash
+mkdir -p .certs
+mkcert -cert-file .certs/localhost.pem -key-file .certs/localhost-key.pem localhost 127.0.0.1 ::1
+```
+
+Keep `.certs/` in `.gitignore`. The mkcert CA must be trusted by the browser and
+by the Go process running `gsx dev`, which makes HTTPS control requests to Vite.
+[`mkcert -install`](https://github.com/FiloSottile/mkcert#installation) installs
+that CA in the local trust stores. Install only the CA's public `rootCA.pem` on
+other development devices; keep `rootCA-key.pem` private. Node-based HTTPS
+clients can use `NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"` when they need
+to trust the same CA.
+
+Set the complete front-door URL and matching port in your dev environment:
+
+```dotenv
+VITE_DEV_URL=https://localhost:5173
+VITE_PORT=5173
+```
+
+Then adapt the quick-start config's `server` section as follows (retaining its
+`gsx()` and `fallback.plugin` plugins):
+
+```ts
+import { readFileSync } from "node:fs";
+
+// Inside defineConfig(({ command, mode }) => { ... }):
+const devUrl = new URL(env.VITE_DEV_URL || "https://localhost:5173");
+const upstream = env.GSX_DEV_UPSTREAM || `http://localhost:${goPort}`;
+
+// In the returned config:
+server: {
+  host: devUrl.hostname,
+  port: vitePort,
+  strictPort: true,
+  // Production builds and CI do not need local certificate files.
+  https: command === "serve" ? {
+    cert: readFileSync(new URL("./.certs/localhost.pem", import.meta.url)),
+    key: readFileSync(new URL("./.certs/localhost-key.pem", import.meta.url)),
+  } : undefined,
+  proxy: {
+    "^(?!/__vite/|/__dev).*": {
+      target: upstream,
+      changeOrigin: false,
+      configure: fallback.configureProxy,
+    },
+  },
+},
+```
+
+Use the same `upstream` for `devFallback({ target: upstream })` and update any
+custom `printUrls` message to print `devUrl.href`. `changeOrigin: false`
+preserves the browser-facing Host header; the original HTTPS Origin header also
+reaches Go, so same-origin checks can compare them. Leave WebSocket proxying
+disabled so Vite owns its secure WebSocket. With a direct Vite front door,
+Vite's browser client selects `wss:` automatically; no `server.hmr` override is
+needed. Changing `VITE_DEV_URL` alone does not enable TLS: it must match the
+listener configured by `server.https`, including the hostname and port.
+
 ---
 
 ## How the loop works (default, with `gsx dev`)
