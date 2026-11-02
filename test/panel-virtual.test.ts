@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { createServer, build, type ViteDevServer, type Logger } from "vite";
+import { build, type ViteDevServer, type Logger } from "vite";
+import { createServer } from "./vite-test-server.js";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

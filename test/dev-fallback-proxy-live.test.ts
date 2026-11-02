@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http, { type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createServer, type ViteDevServer } from "vite";
+import type { ViteDevServer } from "vite";
+import { createServer } from "./vite-test-server.js";
 import { devFallback } from "../src/dev-fallback.js";
 
 // These run real requests through Vite's dev proxy (http-proxy) with
