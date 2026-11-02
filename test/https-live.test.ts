@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import type { ViteDevServer } from "vite";
+import { createServer } from "./vite-test-server.js";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { request, type RequestOptions } from "node:https";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

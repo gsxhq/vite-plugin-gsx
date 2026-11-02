@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import type { ViteDevServer } from "vite";
+import { createServer } from "./vite-test-server.js";
 import WebSocket from "ws";
 import { gsx } from "../src/index.js";
 
